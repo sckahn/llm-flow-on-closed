@@ -1,0 +1,116 @@
+%% Docker Network Topology
+%% Service connectivity and port mappings
+
+graph TB
+    subgraph External["External Access"]
+        Client["Client<br/>Browser/API"]
+    end
+
+    subgraph FrontendNet["Network: llmflow-frontend"]
+        direction TB
+        APISIX["APISIX<br/>:9080 (HTTP)<br/>:9443 (HTTPS)<br/>:9180 (Admin)"]
+        DifyWeb["Dify Web<br/>:3000"]
+    end
+
+    subgraph AuthNet["Network: llmflow-auth"]
+        Keycloak["Keycloak<br/>:8080 (HTTP)<br/>:8443 (HTTPS)"]
+    end
+
+    subgraph BackendNet["Network: llmflow-backend"]
+        direction TB
+        DifyAPI["Dify API<br/>:5001"]
+        DifyWorker["Dify Worker<br/>(no port)"]
+        Langfuse["Langfuse<br/>:3001"]
+        LLaMAFactory["LLaMA-Factory<br/>:7860"]
+    end
+
+    subgraph InferenceNet["Network: llmflow-inference"]
+        direction TB
+        vLLM["vLLM<br/>:8000<br/>GPU Required"]
+        TEIEmbed["TEI Embedding<br/>:8080"]
+        TEIRerank["TEI Reranker<br/>:8081"]
+        Unstructured["Unstructured<br/>:8000"]
+    end
+
+    subgraph DataNet["Network: llmflow-data"]
+        direction TB
+        PostgreSQL["PostgreSQL<br/>:5432"]
+        Redis["Redis<br/>:6379"]
+        Milvus["Milvus<br/>:19530 (gRPC)<br/>:9091 (Health)"]
+        Neo4j["Neo4j<br/>:7687 (Bolt)<br/>:7474 (HTTP)"]
+        MinIO["MinIO<br/>:9000 (API)<br/>:9001 (Console)"]
+        etcd["etcd<br/>:2379 (Client)<br/>:2380 (Peer)"]
+    end
+
+    subgraph MonitorNet["Network: llmflow-monitoring"]
+        direction TB
+        Prometheus["Prometheus<br/>:9090"]
+        Grafana["Grafana<br/>:3002"]
+        MLflow["MLflow<br/>:5000"]
+    end
+
+    %% External connections
+    Client -->|"9080/9443"| APISIX
+    Client -.->|"3000 (dev)"| DifyWeb
+    Client -.->|"7860 (dev)"| LLaMAFactory
+    Client -.->|"7474 (dev)"| Neo4j
+    Client -.->|"9001 (dev)"| MinIO
+    Client -.->|"3002 (dev)"| Grafana
+
+    %% Frontend to Backend
+    APISIX -->|"3000"| DifyWeb
+    APISIX -->|"5001"| DifyAPI
+    APISIX -->|"8080"| Keycloak
+
+    %% Backend to Inference
+    DifyAPI -->|"8000"| vLLM
+    DifyAPI -->|"8080"| TEIEmbed
+    DifyAPI -->|"8081"| TEIRerank
+    DifyWorker -->|"8000"| Unstructured
+
+    %% Backend to Data
+    DifyAPI -->|"5432"| PostgreSQL
+    DifyAPI -->|"6379"| Redis
+    DifyAPI -->|"19530"| Milvus
+    DifyAPI -->|"7687"| Neo4j
+    DifyAPI -->|"9000"| MinIO
+    DifyWorker -->|"6379"| Redis
+    DifyWorker -->|"9000"| MinIO
+
+    %% Auth to Data
+    Keycloak -->|"5432"| PostgreSQL
+
+    %% Data internal
+    Milvus -->|"2379"| etcd
+    Milvus -->|"9000"| MinIO
+    APISIX -->|"2379"| etcd
+
+    %% LLMOps to Data
+    LLaMAFactory -->|"9000"| MinIO
+    MLflow -->|"5432"| PostgreSQL
+    MLflow -->|"9000"| MinIO
+
+    %% Observability
+    DifyAPI -->|"3001"| Langfuse
+    Langfuse -->|"5432"| PostgreSQL
+    Prometheus -.->|scrape| DifyAPI
+    Prometheus -.->|scrape| vLLM
+    Prometheus -.->|scrape| Milvus
+    Grafana -->|"9090"| Prometheus
+
+    %% Styling
+    classDef external fill:#e1bee7,stroke:#7b1fa2
+    classDef frontend fill:#bbdefb,stroke:#1976d2
+    classDef backend fill:#c8e6c9,stroke:#388e3c
+    classDef inference fill:#ffccbc,stroke:#e64a19
+    classDef data fill:#fff9c4,stroke:#fbc02d
+    classDef monitoring fill:#b3e5fc,stroke:#0288d1
+    classDef auth fill:#f8bbd9,stroke:#c2185b
+
+    class Client external
+    class APISIX,DifyWeb frontend
+    class DifyAPI,DifyWorker,Langfuse,LLaMAFactory backend
+    class vLLM,TEIEmbed,TEIRerank,Unstructured inference
+    class PostgreSQL,Redis,Milvus,Neo4j,MinIO,etcd data
+    class Prometheus,Grafana,MLflow monitoring
+    class Keycloak auth

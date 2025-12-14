@@ -1,0 +1,83 @@
+# APISIX Routes Configuration
+# LLMFlow API Gateway Routes
+
+routes:
+  # Dify Web UI
+  - uri: /*
+    name: dify-web
+    upstream:
+      nodes:
+        "dify-web:3000": 1
+      type: roundrobin
+    plugins:
+      proxy-rewrite:
+        uri: "$uri"
+
+  # Dify API
+  - uri: /api/*
+    name: dify-api
+    upstream:
+      nodes:
+        "dify-api:5001": 1
+      type: roundrobin
+    plugins:
+      limit-req:
+        rate: 100
+        burst: 50
+        key: remote_addr
+      cors:
+        allow_origins: "*"
+        allow_methods: "GET,POST,PUT,DELETE,OPTIONS"
+        allow_headers: "*"
+
+  # vLLM API (OpenAI Compatible)
+  - uri: /v1/*
+    name: vllm-api
+    upstream:
+      nodes:
+        "vllm:8000": 1
+      type: roundrobin
+    plugins:
+      key-auth: {}
+      limit-req:
+        rate: 50
+        burst: 20
+        key: consumer_name
+
+  # TEI Embedding API
+  - uri: /embed
+    name: tei-embedding
+    methods: ["POST"]
+    upstream:
+      nodes:
+        "tei-embedding:80": 1
+      type: roundrobin
+    plugins:
+      limit-req:
+        rate: 200
+        burst: 100
+        key: remote_addr
+
+  # TEI Reranker API
+  - uri: /rerank
+    name: tei-reranker
+    methods: ["POST"]
+    upstream:
+      nodes:
+        "tei-reranker:80": 1
+      type: roundrobin
+    plugins:
+      limit-req:
+        rate: 100
+        burst: 50
+        key: remote_addr
+
+  # Keycloak Auth
+  - uri: /auth/*
+    name: keycloak
+    upstream:
+      nodes:
+        "keycloak:8080": 1
+      type: roundrobin
+
+#END

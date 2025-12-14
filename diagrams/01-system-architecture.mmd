@@ -1,0 +1,110 @@
+%% LLMFlow System Architecture - 17 Services
+%% Version 2.0
+
+graph TB
+    subgraph Users["User Layer"]
+        WebUser["Web Browser"]
+        APIClient["API Client"]
+    end
+
+    subgraph Gateway["Gateway Layer"]
+        APISIX["Apache APISIX<br/>API Gateway<br/>:9080/:9443"]
+        Keycloak["Keycloak<br/>SSO/LDAP<br/>:8080"]
+    end
+
+    subgraph Core["Core Platform - Dify"]
+        DifyAPI["Dify API<br/>:5001"]
+        DifyWorker["Dify Worker<br/>Celery"]
+        DifyWeb["Dify Web<br/>Next.js<br/>:3000"]
+    end
+
+    subgraph Inference["Inference Layer"]
+        vLLM["vLLM<br/>OpenAI API<br/>:8000<br/>GPU Required"]
+        TEIEmbed["TEI Embedding<br/>bge-m3<br/>:8080"]
+        TEIRerank["TEI Reranker<br/>bge-reranker-v2-m3<br/>:8081"]
+    end
+
+    subgraph ETL["Document Processing"]
+        Unstructured["Unstructured<br/>ETL/OCR<br/>:8000"]
+    end
+
+    subgraph VectorGraph["Vector & Graph DB"]
+        Milvus[("Milvus<br/>Vector DB<br/>:19530")]
+        Neo4j[("Neo4j<br/>Graph DB<br/>:7687/:7474")]
+    end
+
+    subgraph DataStores["Data Stores"]
+        PostgreSQL[("PostgreSQL<br/>:5432")]
+        Redis[("Redis<br/>:6379")]
+        MinIO[("MinIO<br/>Object Storage<br/>:9000/:9001")]
+        etcd[("etcd<br/>:2379")]
+    end
+
+    subgraph LLMOps["LLMOps & Fine-tuning"]
+        LLaMAFactory["LLaMA-Factory<br/>WebUI<br/>:7860<br/>GPU Required"]
+        MLflow["MLflow<br/>Experiment Tracking<br/>:5000"]
+    end
+
+    subgraph Observability["Observability"]
+        Langfuse["Langfuse<br/>LLM Tracing<br/>:3001"]
+        Prometheus["Prometheus<br/>Metrics<br/>:9090"]
+        Grafana["Grafana<br/>Dashboards<br/>:3002"]
+    end
+
+    %% User connections
+    WebUser --> APISIX
+    APIClient --> APISIX
+
+    %% Gateway connections
+    APISIX --> Keycloak
+    APISIX --> DifyWeb
+    APISIX --> DifyAPI
+
+    %% Core platform connections
+    DifyWeb --> DifyAPI
+    DifyAPI --> DifyWorker
+    DifyAPI --> PostgreSQL
+    DifyAPI --> Redis
+    DifyAPI --> MinIO
+    DifyWorker --> Redis
+
+    %% Inference connections
+    DifyAPI --> vLLM
+    DifyAPI --> TEIEmbed
+    DifyAPI --> TEIRerank
+    DifyWorker --> Unstructured
+
+    %% Vector/Graph connections
+    DifyAPI --> Milvus
+    DifyAPI --> Neo4j
+    TEIEmbed -.-> Milvus
+
+    %% Data store dependencies
+    Milvus --> etcd
+    Milvus --> MinIO
+    APISIX --> etcd
+    Keycloak --> PostgreSQL
+
+    %% LLMOps connections
+    LLaMAFactory --> MinIO
+    LLaMAFactory --> MLflow
+    MLflow --> PostgreSQL
+    MLflow --> MinIO
+
+    %% Observability connections
+    DifyAPI --> Langfuse
+    Langfuse --> PostgreSQL
+    Prometheus --> Grafana
+
+    %% Styling
+    classDef gpu fill:#ff9800,stroke:#e65100,color:#000
+    classDef db fill:#2196f3,stroke:#1565c0,color:#fff
+    classDef core fill:#4caf50,stroke:#2e7d32,color:#fff
+    classDef gateway fill:#9c27b0,stroke:#6a1b9a,color:#fff
+    classDef inference fill:#f44336,stroke:#c62828,color:#fff
+
+    class vLLM,LLaMAFactory gpu
+    class PostgreSQL,Redis,MinIO,Milvus,Neo4j,etcd db
+    class DifyAPI,DifyWorker,DifyWeb core
+    class APISIX,Keycloak gateway
+    class TEIEmbed,TEIRerank inference

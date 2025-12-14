@@ -1,0 +1,8 @@
+# Persistent data volumes
+# This directory will contain:
+# - postgresql/
+# - redis/
+# - milvus/
+# - neo4j/
+# - minio/
+# - etcd/

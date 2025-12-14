@@ -1,0 +1,84 @@
+%% Hybrid RAG Query Flow
+%% Vector Search + Graph Search -> RRF Fusion -> Reranking -> LLM
+
+sequenceDiagram
+    autonumber
+    participant User as User
+    participant APISIX as APISIX Gateway
+    participant DifyAPI as Dify API
+    participant Redis as Redis Cache
+    participant TEIEmbed as TEI Embedding
+    participant Milvus as Milvus Vector DB
+    participant Neo4j as Neo4j Graph DB
+    participant TEIRerank as TEI Reranker
+    participant vLLM as vLLM
+    participant Langfuse as Langfuse
+
+    User->>APISIX: Query: "연차 휴가 신청 방법은?"
+    APISIX->>APISIX: JWT Validation
+    APISIX->>APISIX: Rate Limit Check (RPM/TPM)
+    APISIX->>DifyAPI: Forward Request
+
+    rect rgb(230, 240, 250)
+        Note over DifyAPI,Redis: Cache Lookup
+        DifyAPI->>Redis: Check Semantic Cache
+        alt Cache Hit
+            Redis-->>DifyAPI: Cached Response
+            DifyAPI-->>User: Cached Answer
+        else Cache Miss
+            Redis-->>DifyAPI: null
+        end
+    end
+
+    rect rgb(250, 240, 230)
+        Note over DifyAPI,TEIEmbed: Query Embedding
+        DifyAPI->>TEIEmbed: POST /embed
+        Note over TEIEmbed: Model: bge-m3<br/>Latency: ~25ms
+        TEIEmbed-->>DifyAPI: Query Vector [1024]
+    end
+
+    rect rgb(230, 250, 230)
+        Note over DifyAPI,Neo4j: Parallel Hybrid Search
+        par Vector Search
+            DifyAPI->>Milvus: Search (top_k=20)
+            Note over Milvus: Filter: tenant_id, department<br/>Metric: COSINE<br/>Latency: ~30ms
+            Milvus-->>DifyAPI: Vector Results (20)
+        and Graph Search
+            DifyAPI->>Neo4j: Entity Match + 2-hop Traversal
+            Note over Neo4j: MATCH (e:Entity)-[:RELATED*1..2]-(c:Chunk)<br/>WHERE e.name CONTAINS query<br/>Latency: ~40ms
+            Neo4j-->>DifyAPI: Graph Context
+        end
+    end
+
+    rect rgb(250, 230, 250)
+        Note over DifyAPI: RRF Fusion
+        DifyAPI->>DifyAPI: Reciprocal Rank Fusion
+        Note over DifyAPI: score = Σ 1/(k + rank)<br/>k = 60 (constant)<br/>Merge vector + graph results
+    end
+
+    rect rgb(250, 250, 200)
+        Note over DifyAPI,TEIRerank: Reranking
+        DifyAPI->>TEIRerank: POST /rerank (25 candidates)
+        Note over TEIRerank: Model: bge-reranker-v2-m3<br/>Cross-encoder scoring<br/>Latency: ~40ms
+        TEIRerank-->>DifyAPI: Reranked Results (top 5)
+    end
+
+    rect rgb(200, 230, 250)
+        Note over DifyAPI,vLLM: Context Assembly & Generation
+        DifyAPI->>DifyAPI: Build Prompt
+        Note over DifyAPI: System: You are HR assistant<br/>Context: [5 chunks + graph relations]<br/>Query: 연차 휴가 신청 방법은?
+        DifyAPI->>vLLM: POST /v1/chat/completions (stream)
+        Note over vLLM: Model: Llama-3.1-8B<br/>Temperature: 0.7<br/>Max tokens: 1024
+        loop Streaming Response
+            vLLM-->>User: SSE: data chunks
+        end
+    end
+
+    rect rgb(240, 240, 240)
+        Note over DifyAPI,Langfuse: Observability
+        DifyAPI->>Redis: Cache Response (TTL: 1h)
+        DifyAPI->>Langfuse: Log Trace
+        Note over Langfuse: Latency breakdown<br/>Token usage<br/>Cost tracking
+    end
+
+    Note over User,Langfuse: Total Latency: ~150-300ms

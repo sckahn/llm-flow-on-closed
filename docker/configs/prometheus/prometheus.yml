@@ -1,0 +1,92 @@
+# Prometheus Configuration
+# LLMFlow Metrics Collection
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'llmflow-local'
+    env: 'development'
+
+alerting:
+  alertmanagers: []
+
+rule_files: []
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # APISIX Gateway
+  - job_name: 'apisix'
+    static_configs:
+      - targets: ['apisix:9091']
+    metrics_path: /apisix/prometheus/metrics
+
+  # Dify API
+  - job_name: 'dify-api'
+    static_configs:
+      - targets: ['dify-api:5001']
+    metrics_path: /metrics
+
+  # vLLM
+  - job_name: 'vllm'
+    static_configs:
+      - targets: ['vllm:8000']
+    metrics_path: /metrics
+
+  # TEI Embedding
+  - job_name: 'tei-embedding'
+    static_configs:
+      - targets: ['tei-embedding:80']
+    metrics_path: /metrics
+
+  # TEI Reranker
+  - job_name: 'tei-reranker'
+    static_configs:
+      - targets: ['tei-reranker:80']
+    metrics_path: /metrics
+
+  # Milvus
+  - job_name: 'milvus'
+    static_configs:
+      - targets: ['milvus-standalone:9091']
+    metrics_path: /metrics
+
+  # PostgreSQL (via postgres_exporter if available)
+  - job_name: 'postgresql'
+    static_configs:
+      - targets: ['postgresql:5432']
+    metrics_path: /metrics
+
+  # Redis
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+    metrics_path: /metrics
+
+  # MinIO
+  - job_name: 'minio'
+    static_configs:
+      - targets: ['minio:9000']
+    metrics_path: /minio/v2/metrics/cluster
+
+  # Neo4j
+  - job_name: 'neo4j'
+    static_configs:
+      - targets: ['neo4j:2004']
+    metrics_path: /metrics
+
+  # MLflow
+  - job_name: 'mlflow'
+    static_configs:
+      - targets: ['mlflow:5000']
+    metrics_path: /metrics
+
+  # Langfuse
+  - job_name: 'langfuse'
+    static_configs:
+      - targets: ['langfuse:3000']
+    metrics_path: /api/public/metrics

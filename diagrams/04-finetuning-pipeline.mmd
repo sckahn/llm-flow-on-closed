@@ -1,0 +1,92 @@
+%% Fine-tuning Pipeline with LLaMA-Factory
+%% Data Prep -> Training -> Evaluation -> Deployment
+
+flowchart TD
+    subgraph DataPrep["1. Data Preparation"]
+        A[Raw Training Data] --> B{Data Format}
+        B -->|CSV/JSON| C[Convert to Alpaca Format]
+        B -->|Conversations| D[Convert to ShareGPT Format]
+        C --> E[Dataset JSON]
+        D --> E
+        E --> F[Upload to MinIO<br/>s3://datasets/]
+    end
+
+    subgraph Config["2. LLaMA-Factory Configuration"]
+        G[Access WebUI<br/>:7860] --> H[Select Base Model]
+        H --> I{Model Selection}
+        I --> J[Llama-3.1-8B]
+        I --> K[Llama-3.1-70B]
+        I --> L[Qwen-2.5-72B]
+        I --> M[Custom Model]
+
+        J & K & L & M --> N{Training Method}
+        N -->|Efficient| O[LoRA]
+        N -->|Memory Efficient| P[QLoRA]
+        N -->|Advanced| Q[DoRA]
+        N -->|Full Model| R[Full Fine-tuning]
+
+        O --> S[LoRA Config<br/>rank=64, alpha=128<br/>target: q,k,v,o projections]
+        P --> T[QLoRA Config<br/>4-bit quantization<br/>double quant enabled]
+        Q --> U[DoRA Config<br/>weight decomposition]
+        R --> V[Full Config<br/>all parameters trainable]
+    end
+
+    subgraph Training["3. Training Execution"]
+        S & T & U & V --> W[Start Training Job]
+        W --> X{DeepSpeed Stage}
+        X -->|Single GPU| Y[ZeRO Stage 0]
+        X -->|Multi GPU| Z[ZeRO Stage 2]
+        X -->|Large Model| AA[ZeRO Stage 3]
+
+        Y & Z & AA --> AB[GPU Training]
+        AB --> AC{Flash Attention 2}
+        AC -->|Enabled| AD[Memory Efficient<br/>2x speedup]
+        AC -->|Disabled| AE[Standard Attention]
+
+        AD & AE --> AF[Training Loop]
+        AF --> AG[MLflow Logging]
+        AG --> AH{Checkpoint?}
+        AH -->|Save| AI[MinIO Checkpoint<br/>s3://checkpoints/]
+        AH -->|Continue| AF
+        AI --> AF
+    end
+
+    subgraph Eval["4. Evaluation"]
+        AF -->|Complete| AJ[Training Complete]
+        AJ --> AK[Load Best Checkpoint]
+        AK --> AL[Evaluation Dataset]
+        AL --> AM[Run Evaluation]
+        AM --> AN{Metrics}
+        AN --> AO[Loss]
+        AN --> AP[Perplexity]
+        AN --> AQ[Task-specific Metrics]
+        AO & AP & AQ --> AR[MLflow Metrics Log]
+    end
+
+    subgraph Export["5. Model Export"]
+        AR --> AS{Export Format}
+        AS -->|Adapter Only| AT[Export LoRA Adapter<br/>adapter_model.safetensors]
+        AS -->|Merged Model| AU[Merge with Base<br/>merged_model/]
+        AS -->|Quantized| AV[GGUF Export<br/>model.gguf]
+    end
+
+    subgraph Deploy["6. Deployment to vLLM"]
+        AT --> AW{Deployment Mode}
+        AU --> AW
+        AV --> AX[Ollama/llama.cpp]
+
+        AW -->|LoRA Adapter| AY[vLLM --enable-lora<br/>--lora-modules adapter]
+        AW -->|Merged Model| AZ[vLLM --model merged_model]
+
+        AY --> BA[Model Registry<br/>MLflow]
+        AZ --> BA
+        BA --> BB[Production Serving<br/>vLLM :8000]
+    end
+
+    %% Styling
+    style DataPrep fill:#e3f2fd
+    style Config fill:#fff3e0
+    style Training fill:#e8f5e9
+    style Eval fill:#fce4ec
+    style Export fill:#f3e5f5
+    style Deploy fill:#e0f7fa

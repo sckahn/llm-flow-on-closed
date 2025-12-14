@@ -1,0 +1,68 @@
+%% Document Indexing Pipeline
+%% Unstructured -> TEI -> Milvus + Neo4j
+
+sequenceDiagram
+    autonumber
+    participant User as User
+    participant APISIX as APISIX Gateway
+    participant DifyAPI as Dify API
+    participant MinIO as MinIO Storage
+    participant PG as PostgreSQL
+    participant Worker as Dify Worker
+    participant Unstructured as Unstructured ETL
+    participant TEI as TEI Embedding
+    participant Milvus as Milvus Vector DB
+    participant Neo4j as Neo4j Graph DB
+
+    User->>APISIX: Upload Document (PDF/PPT/Excel)
+    APISIX->>APISIX: JWT Validation & Rate Limit
+    APISIX->>DifyAPI: Forward Request
+
+    rect rgb(200, 230, 200)
+        Note over DifyAPI,PG: Document Registration
+        DifyAPI->>MinIO: Store Original File
+        MinIO-->>DifyAPI: File URL
+        DifyAPI->>PG: Create Document Record (status: pending)
+        DifyAPI->>Worker: Queue Processing Job (Redis)
+    end
+
+    DifyAPI-->>User: 202 Accepted (document_id)
+
+    rect rgb(200, 200, 230)
+        Note over Worker,Unstructured: Document Parsing
+        Worker->>MinIO: Fetch Document
+        MinIO-->>Worker: File Content
+        Worker->>Unstructured: POST /general/v0/general
+        Note over Unstructured: OCR + Table Extraction<br/>Layout Analysis<br/>Structure Preservation
+        Unstructured-->>Worker: Parsed Elements (JSON)
+    end
+
+    rect rgb(230, 230, 200)
+        Note over Worker: Semantic Chunking
+        Worker->>Worker: Apply Chunking Strategy
+        Note over Worker: chunk_size: 400 tokens<br/>chunk_overlap: 50 tokens<br/>strategy: semantic
+    end
+
+    rect rgb(230, 200, 200)
+        Note over Worker,Milvus: Vector Embedding & Storage
+        Worker->>TEI: POST /embed (batch=32)
+        Note over TEI: Model: BAAI/bge-m3<br/>Dimension: 1024
+        TEI-->>Worker: Vectors [1024]
+        Worker->>Milvus: Insert Vectors
+        Note over Milvus: Collection: document_chunks<br/>Index: HNSW (M=16)<br/>Metric: COSINE
+        Milvus-->>Worker: Insert OK
+    end
+
+    rect rgb(200, 220, 230)
+        Note over Worker,Neo4j: Knowledge Graph Extraction
+        Worker->>Worker: Extract Entities & Relations
+        Note over Worker: NER: Person, Org, Location<br/>Relation Extraction
+        Worker->>Neo4j: CREATE Nodes & Relationships
+        Note over Neo4j: :Document -> :Chunk -> :Entity<br/>:Entity -[:RELATED_TO]-> :Entity
+        Neo4j-->>Worker: Graph Created
+    end
+
+    Worker->>PG: Update Status (completed)
+    Worker->>DifyAPI: Webhook Notification
+
+    Note over User,Neo4j: Document Ready for Hybrid RAG Query

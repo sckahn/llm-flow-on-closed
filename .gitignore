@@ -1,0 +1,49 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Next.js
+.next/
+out/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+.venv/
+*.egg-info/
+
+# Environment
+.env
+.env.local
+.env*.local
+*.pem
+
+# Docker volumes
+data/volumes/
+
+# Build
+build/
+dist/
+*.tsbuildinfo
+
+# Logs
+logs/
+*.log
+
+# Claude
+.claude/

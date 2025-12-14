@@ -1,0 +1,96 @@
+%% Security & Authentication Flow
+%% Keycloak SSO + APISIX + RBAC
+
+sequenceDiagram
+    autonumber
+    participant User as User Browser
+    participant APISIX as APISIX Gateway
+    participant Keycloak as Keycloak SSO
+    participant LDAP as LDAP/AD Server
+    participant DifyAPI as Dify API
+    participant PG as PostgreSQL
+
+    rect rgb(255, 240, 240)
+        Note over User,LDAP: Authentication Flow (Login)
+        User->>APISIX: GET /app (no token)
+        APISIX->>User: 302 Redirect to Keycloak
+        User->>Keycloak: Login Page
+        User->>Keycloak: Submit Credentials
+
+        Keycloak->>LDAP: Validate Username/Password
+        LDAP-->>Keycloak: User Info + Groups
+        Note over LDAP: Groups: dept-finance,<br/>role-admin, project-ai
+
+        Keycloak->>Keycloak: Map LDAP Groups to Roles
+        Note over Keycloak: dept-finance -> TENANT_FINANCE<br/>role-admin -> ADMIN<br/>project-ai -> PROJECT_AI_MEMBER
+
+        Keycloak->>Keycloak: Generate JWT Token
+        Note over Keycloak: Claims:<br/>sub: user123<br/>roles: [ADMIN, TENANT_FINANCE]<br/>tenant_id: finance<br/>exp: +8h
+
+        Keycloak-->>User: JWT Access Token + Refresh Token
+    end
+
+    rect rgb(240, 255, 240)
+        Note over User,DifyAPI: Authorization Flow (API Request)
+        User->>APISIX: GET /api/documents<br/>Authorization: Bearer {JWT}
+
+        APISIX->>APISIX: Validate JWT Signature
+        Note over APISIX: Verify with Keycloak public key
+
+        APISIX->>APISIX: Check Token Expiry
+        alt Token Expired
+            APISIX-->>User: 401 Unauthorized
+            User->>Keycloak: Refresh Token
+            Keycloak-->>User: New Access Token
+        end
+
+        APISIX->>APISIX: Rate Limit Check
+        Note over APISIX: Per-user: 100 req/min<br/>Per-tenant: 1000 req/min<br/>Global: 10000 req/min
+
+        alt Rate Limited
+            APISIX-->>User: 429 Too Many Requests
+        end
+
+        APISIX->>APISIX: Extract Claims & Forward
+        Note over APISIX: X-User-ID: user123<br/>X-Tenant-ID: finance<br/>X-User-Roles: ADMIN,TENANT_FINANCE
+    end
+
+    rect rgb(240, 240, 255)
+        Note over APISIX,PG: Resource Authorization
+        APISIX->>DifyAPI: Forward Request + Headers
+
+        DifyAPI->>DifyAPI: Parse Authorization Headers
+        DifyAPI->>DifyAPI: RBAC Policy Check
+        Note over DifyAPI: Action: READ documents<br/>Resource: /documents<br/>Role required: TENANT_*
+
+        alt Forbidden
+            DifyAPI-->>User: 403 Forbidden
+        end
+
+        DifyAPI->>PG: Query with Tenant Filter
+        Note over PG: SELECT * FROM documents<br/>WHERE tenant_id = 'finance'
+        PG-->>DifyAPI: Filtered Results
+
+        DifyAPI-->>User: 200 OK (tenant-scoped data)
+    end
+
+    rect rgb(255, 255, 240)
+        Note over User,PG: Token Refresh Flow
+        User->>Keycloak: POST /token (refresh_token)
+        Keycloak->>Keycloak: Validate Refresh Token
+
+        alt Refresh Token Valid
+            Keycloak->>LDAP: Re-fetch User Groups
+            Note over LDAP: Check if user still active<br/>Get updated groups
+            LDAP-->>Keycloak: Current Groups
+            Keycloak-->>User: New Access Token
+        else Refresh Token Expired/Revoked
+            Keycloak-->>User: 401 Re-login Required
+        end
+    end
+
+    rect rgb(255, 240, 255)
+        Note over User,PG: Audit Logging
+        DifyAPI->>PG: INSERT audit_log
+        Note over PG: user_id, action, resource,<br/>tenant_id, timestamp, ip_address
+    end
