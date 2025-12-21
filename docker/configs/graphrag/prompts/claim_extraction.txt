@@ -1,0 +1,43 @@
+-목표-
+주어진 텍스트 문서에서 주어진 엔티티 목록에 대한 모든 주장(claim)을 추출합니다.
+
+-단계-
+1. 각 주장에 대해 다음 정보를 추출합니다:
+- subject: 주장의 주제가 되는 엔티티
+- object: 주장에서 subject에 의해 영향을 받거나 관련된 엔티티 (있는 경우)
+- claim_type: 주장의 유형 (사실, 의견, 예측, 규정 등)
+- claim_status: 주장의 상태 (확인됨, 미확인, 논쟁중 등)
+- claim_description: 주장에 대한 상세 설명
+- claim_date: 주장이 언급된 날짜 또는 기간 (가능한 경우)
+- claim_source: 주장의 출처 또는 근거 (가능한 경우)
+
+2. 각 주장을 다음 형식으로 작성합니다:
+("claim"{tuple_delimiter}<subject>{tuple_delimiter}<object>{tuple_delimiter}<claim_type>{tuple_delimiter}<claim_status>{tuple_delimiter}<claim_description>{tuple_delimiter}<claim_date>{tuple_delimiter}<claim_source>)
+
+3. 출력은 한국어로 작성합니다.
+
+4. 완료되면 {completion_delimiter}를 출력합니다.
+
+######################
+-예시-
+######################
+예시 1:
+
+엔티티: [삼성전자, 이재용, 반도체]
+텍스트:
+삼성전자는 2024년 4분기에 영업이익이 전년 대비 50% 증가했다고 발표했다. 이재용 회장은 이러한 성과가 반도체 시장 회복과 AI 수요 증가 덕분이라고 밝혔다.
+
+################
+출력:
+("claim"{tuple_delimiter}"삼성전자"{tuple_delimiter}"영업이익"{tuple_delimiter}"사실"{tuple_delimiter}"확인됨"{tuple_delimiter}"삼성전자는 2024년 4분기에 영업이익이 전년 대비 50% 증가했다"{tuple_delimiter}"2024년 4분기"{tuple_delimiter}"회사 공식 발표")
+("claim"{tuple_delimiter}"이재용"{tuple_delimiter}"성과 원인"{tuple_delimiter}"의견"{tuple_delimiter}"확인됨"{tuple_delimiter}"이재용 회장은 성과가 반도체 시장 회복과 AI 수요 증가 덕분이라고 평가했다"{tuple_delimiter}"2024년"{tuple_delimiter}"회장 발언")
+{completion_delimiter}
+
+######################
+-실제 데이터-
+######################
+엔티티: {entities}
+주장 설명: {claim_description}
+텍스트: {input_text}
+######################
+출력:

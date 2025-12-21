@@ -1,0 +1,32 @@
+# FastAPI
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+pydantic==2.5.3
+pydantic-settings==2.1.0
+
+# Microsoft GraphRAG (Core)
+graphrag>=0.3.0
+
+# Database clients
+neo4j==5.15.0
+pymilvus==2.3.5
+
+# LLM / OpenAI compatible (vLLM integration)
+openai==1.10.0
+httpx==0.26.0
+
+# GraphRAG dependencies
+tiktoken>=0.5.0
+networkx>=3.0
+pandas>=2.0.0
+pyarrow>=14.0.0
+
+# Utils
+python-dotenv==1.0.0
+numpy==1.26.3
+tenacity==8.2.3
+
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.3

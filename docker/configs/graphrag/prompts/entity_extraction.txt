@@ -1,0 +1,62 @@
+-목표-
+주어진 텍스트 문서와 엔티티 유형 목록이 있을 때, 텍스트에서 해당 유형의 모든 엔티티와 식별된 엔티티 간의 모든 관계를 추출합니다.
+
+-단계-
+1. 모든 엔티티를 식별합니다. 식별된 각 엔티티에 대해 다음 정보를 추출합니다:
+- entity_name: 엔티티의 이름 (대문자로 작성)
+- entity_type: 다음 유형 중 하나: [{entity_types}]
+- entity_description: 엔티티의 속성과 활동에 대한 종합적인 설명
+
+각 엔티티를 다음 형식으로 작성합니다:
+("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>)
+
+2. 1단계에서 식별된 엔티티들 사이의 모든 관계를 추출합니다.
+명확하게 관련된 엔티티 쌍에 대해 다음 정보를 추출합니다:
+- source_entity: 1단계에서 식별된 소스 엔티티의 이름
+- target_entity: 1단계에서 식별된 대상 엔티티의 이름
+- relationship_description: 소스 엔티티와 대상 엔티티가 왜 관련되어 있는지에 대한 설명
+- relationship_strength: 소스 엔티티와 대상 엔티티 간의 관계 강도를 나타내는 1-10 사이의 숫자
+- relationship_keywords: 관계를 요약하는 하나 이상의 고수준 핵심 단어 (쉼표로 구분)
+
+각 관계를 다음 형식으로 작성합니다:
+("relationship"{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_description>{tuple_delimiter}<relationship_keywords>{tuple_delimiter}<relationship_strength>)
+
+3. 한국어와 영어가 혼합된 텍스트의 경우, 엔티티 이름은 텍스트에서 사용된 언어 그대로 추출합니다.
+
+4. 모든 출력은 한국어로 작성합니다 (엔티티 이름 제외).
+
+5. 완료되면 {completion_delimiter}를 출력합니다.
+
+######################
+-예시-
+######################
+예시 1:
+
+엔티티 유형: [person, organization, location, event, concept]
+텍스트:
+삼성전자의 이재용 회장은 서울 본사에서 열린 AI 혁신 포럼에서 차세대 반도체 기술에 대해 발표했다. 이 행사에는 SK하이닉스와 LG전자 임원들도 참석했다.
+
+################
+출력:
+("entity"{tuple_delimiter}"삼성전자"{tuple_delimiter}"organization"{tuple_delimiter}"한국의 대표적인 전자기업으로 반도체, 스마트폰 등을 생산하는 대기업")
+("entity"{tuple_delimiter}"이재용"{tuple_delimiter}"person"{tuple_delimiter}"삼성전자의 회장으로 그룹의 최고 경영자")
+("entity"{tuple_delimiter}"서울"{tuple_delimiter}"location"{tuple_delimiter}"대한민국의 수도이자 삼성전자 본사가 위치한 도시")
+("entity"{tuple_delimiter}"AI 혁신 포럼"{tuple_delimiter}"event"{tuple_delimiter}"인공지능 기술 혁신을 주제로 한 포럼 행사")
+("entity"{tuple_delimiter}"SK하이닉스"{tuple_delimiter}"organization"{tuple_delimiter}"한국의 반도체 제조 기업")
+("entity"{tuple_delimiter}"LG전자"{tuple_delimiter}"organization"{tuple_delimiter}"한국의 전자제품 제조 기업")
+("entity"{tuple_delimiter}"차세대 반도체 기술"{tuple_delimiter}"concept"{tuple_delimiter}"미래 반도체 산업을 이끌 첨단 기술")
+("relationship"{tuple_delimiter}"이재용"{tuple_delimiter}"삼성전자"{tuple_delimiter}"이재용은 삼성전자의 회장으로서 그룹을 이끌고 있다"{tuple_delimiter}"경영, 리더십"{tuple_delimiter}10)
+("relationship"{tuple_delimiter}"삼성전자"{tuple_delimiter}"AI 혁신 포럼"{tuple_delimiter}"삼성전자가 AI 혁신 포럼을 개최하고 발표를 진행했다"{tuple_delimiter}"개최, 발표"{tuple_delimiter}9)
+("relationship"{tuple_delimiter}"AI 혁신 포럼"{tuple_delimiter}"서울"{tuple_delimiter}"AI 혁신 포럼이 서울에서 개최되었다"{tuple_delimiter}"장소, 개최"{tuple_delimiter}8)
+("relationship"{tuple_delimiter}"이재용"{tuple_delimiter}"차세대 반도체 기술"{tuple_delimiter}"이재용 회장이 차세대 반도체 기술에 대해 발표했다"{tuple_delimiter}"발표, 기술"{tuple_delimiter}8)
+("relationship"{tuple_delimiter}"SK하이닉스"{tuple_delimiter}"AI 혁신 포럼"{tuple_delimiter}"SK하이닉스 임원들이 AI 혁신 포럼에 참석했다"{tuple_delimiter}"참석, 협력"{tuple_delimiter}6)
+("relationship"{tuple_delimiter}"LG전자"{tuple_delimiter}"AI 혁신 포럼"{tuple_delimiter}"LG전자 임원들이 AI 혁신 포럼에 참석했다"{tuple_delimiter}"참석, 협력"{tuple_delimiter}6)
+{completion_delimiter}
+
+######################
+-실제 데이터-
+######################
+엔티티 유형: [{entity_types}]
+텍스트: {input_text}
+######################
+출력:
