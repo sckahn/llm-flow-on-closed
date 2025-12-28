@@ -167,7 +167,7 @@ start_core_platform() {
     log_info "Starting core platform (Phase 4)..."
 
     cd "${DOCKER_DIR}"
-    $COMPOSE_CMD up -d dify-api dify-worker dify-web
+    $COMPOSE_CMD up -d dify-api dify-worker llmflow-ui
 
     sleep 10
     log_success "Core platform started"
@@ -277,15 +277,23 @@ main() {
             log_success "Infrastructure started"
             ;;
         "platform")
+            check_prerequisites
+            setup_environment
+            start_infrastructure
+            initialize_databases
             start_auth_gateway
             start_core_platform
             log_success "Platform started"
             ;;
         "inference")
+            check_prerequisites
+            setup_environment
             start_inference
             log_success "Inference services started"
             ;;
         "monitoring")
+            check_prerequisites
+            setup_environment
             start_llmops
             log_success "Monitoring started"
             ;;
@@ -293,12 +301,16 @@ main() {
             bash "${SCRIPT_DIR}/healthcheck.sh"
             ;;
         "stop")
+            check_prerequisites
+            setup_environment
             log_info "Stopping all services..."
             cd "${DOCKER_DIR}"
             $COMPOSE_CMD down
             log_success "All services stopped"
             ;;
         "restart")
+            check_prerequisites
+            setup_environment
             log_info "Restarting all services..."
             cd "${DOCKER_DIR}"
             $COMPOSE_CMD restart

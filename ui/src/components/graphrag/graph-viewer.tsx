@@ -118,35 +118,47 @@ export function GraphViewer({
 
     const visibleNodeIds = new Set(nodes.map(n => n.id));
 
+    // Deduplicate edges by creating unique keys with index for same source-target pairs
+    const seenEdgeKeys = new Map<string, number>();
     const edges: Edge[] = data.edges
       .filter(edge => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target))
-      .map((edge) => ({
-        id: edge.id,
-        source: edge.source,
-        target: edge.target,
-        label: edge.label,
-        type: 'smoothstep',
-        animated: false,
-        style: {
-          stroke: '#94a3b8',
-          strokeWidth: Math.min(edge.weight || 1, 3),
-        },
-        labelStyle: {
-          fontSize: 10,
-          fill: '#64748b',
-        },
-        labelBgStyle: {
-          fill: '#fff',
-          fillOpacity: 0.8,
-        },
-        markerEnd: {
-          type: MarkerType.ArrowClosed,
-          color: '#94a3b8',
-        },
-        data: {
-          originalEdge: edge,
-        },
-      }));
+      .map((edge) => {
+        // Create a base key from source, target, and label
+        const baseKey = `${edge.source}_${edge.target}_${edge.label || edge.type}`;
+        const count = seenEdgeKeys.get(baseKey) || 0;
+        seenEdgeKeys.set(baseKey, count + 1);
+
+        // Make ID unique by appending count if there are duplicates
+        const uniqueId = count > 0 ? `${edge.id || baseKey}_${count}` : (edge.id || baseKey);
+
+        return {
+          id: uniqueId,
+          source: edge.source,
+          target: edge.target,
+          label: edge.label,
+          type: 'smoothstep',
+          animated: false,
+          style: {
+            stroke: '#94a3b8',
+            strokeWidth: Math.min(edge.weight || 1, 3),
+          },
+          labelStyle: {
+            fontSize: 10,
+            fill: '#64748b',
+          },
+          labelBgStyle: {
+            fill: '#fff',
+            fillOpacity: 0.8,
+          },
+          markerEnd: {
+            type: MarkerType.ArrowClosed,
+            color: '#94a3b8',
+          },
+          data: {
+            originalEdge: edge,
+          },
+        };
+      });
 
     return { initialNodes: nodes, initialEdges: edges };
   }, [data, visibleTypes, selectedNode]);

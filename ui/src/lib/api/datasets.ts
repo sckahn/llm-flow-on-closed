@@ -42,6 +42,7 @@ export async function getDocuments(
   return api.get<DocumentListResponse>(`/console/api/datasets/${datasetId}/documents`, {
     page: String(page),
     limit: String(limit),
+    fetch: 'true',
   });
 }
 
@@ -53,36 +54,60 @@ export async function uploadDocument(
     process_rule?: Record<string, unknown>;
   }
 ): Promise<{ document: Document }> {
+  const token = localStorage.getItem('access_token');
+
+  // Step 1: Upload file
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5002';
   const formData = new FormData();
   formData.append('file', file);
 
-  if (options?.indexing_technique) {
-    formData.append('indexing_technique', options.indexing_technique);
+  const uploadResponse = await fetch(`${apiUrl}/console/api/files/upload`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: formData,
+  });
+
+  if (!uploadResponse.ok) {
+    const error = await uploadResponse.json().catch(() => ({ message: 'File upload failed' }));
+    throw new Error(error.message || 'File upload failed');
   }
 
-  if (options?.process_rule) {
-    formData.append('process_rule', JSON.stringify(options.process_rule));
-  }
+  const uploadedFile = await uploadResponse.json();
 
-  // Use direct fetch for file upload
-  const token = localStorage.getItem('access_token');
-  const response = await fetch(
-    `${process.env.NEXT_PUBLIC_API_URL}/console/api/datasets/${datasetId}/document/create-by-file`,
+  // Step 2: Create document from uploaded file
+  const createResponse = await fetch(
+    `${apiUrl}/console/api/datasets/${datasetId}/documents`,
     {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
       },
-      body: formData,
+      body: JSON.stringify({
+        data_source: {
+          type: 'upload_file',
+          info_list: {
+            file_info_list: {
+              file_ids: [uploadedFile.id],
+            },
+          },
+        },
+        indexing_technique: options?.indexing_technique || 'high_quality',
+        process_rule: options?.process_rule || {
+          mode: 'automatic',
+        },
+      }),
     }
   );
 
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ message: 'Upload failed' }));
-    throw new Error(error.message || 'Upload failed');
+  if (!createResponse.ok) {
+    const error = await createResponse.json().catch(() => ({ message: 'Document creation failed' }));
+    throw new Error(error.message || 'Document creation failed');
   }
 
-  return response.json();
+  return createResponse.json();
 }
 
 export async function deleteDocument(datasetId: string, documentId: string): Promise<void> {
@@ -93,5 +118,70 @@ export async function getDocumentSegments(
   datasetId: string,
   documentId: string
 ): Promise<{ data: Array<{ id: string; content: string; keywords: string[] }> }> {
-  return api.get(`/console/api/datasets/${datasetId}/documents/${documentId}/segments`);
+  // Fetch all segments with pagination
+  const allSegments: Array<{ id: string; content: string; keywords: string[] }> = [];
+  let page = 1;
+  const limit = 100;
+  let hasMore = true;
+
+  while (hasMore) {
+    const response = await api.get<{
+      data: Array<{ id: string; content: string; keywords: string[] }>;
+      has_more: boolean;
+      total: number;
+    }>(`/console/api/datasets/${datasetId}/documents/${documentId}/segments`, {
+      page: String(page),
+      limit: String(limit),
+    });
+
+    if (response.data && response.data.length > 0) {
+      allSegments.push(...response.data);
+      hasMore = response.has_more ?? (response.data.length === limit);
+      page++;
+    } else {
+      hasMore = false;
+    }
+  }
+
+  return { data: allSegments };
+}
+
+export async function retryDocumentIndexing(
+  datasetId: string,
+  documentId: string
+): Promise<{ result: string }> {
+  // Use retry endpoint with document_ids array
+  return api.post(`/console/api/datasets/${datasetId}/retry`, {
+    document_ids: [documentId],
+  });
+}
+
+// Document progress types
+export interface DocumentProgress {
+  document_id: string;
+  stage: 'parsing' | 'splitting' | 'indexing' | 'completed' | 'error' | 'paused' | 'unknown';
+  progress: number;
+  message: string;
+  total_pages?: number;
+  current_page?: number;
+  updated_at?: string;
+}
+
+export async function getDocumentProgress(
+  datasetId: string,
+  documentId: string
+): Promise<DocumentProgress> {
+  return api.get<DocumentProgress>(
+    `/console/api/datasets/${datasetId}/documents/${documentId}/progress`
+  );
+}
+
+export async function getDocumentsProgress(
+  datasetId: string,
+  documentIds: string[]
+): Promise<{ data: Record<string, DocumentProgress | null> }> {
+  return api.get(
+    `/console/api/datasets/${datasetId}/documents-progress`,
+    { document_ids: documentIds.join(',') }
+  );
 }

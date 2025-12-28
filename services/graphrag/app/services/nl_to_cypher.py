@@ -81,10 +81,19 @@ class NLToCypher:
         cypher = cypher.strip()
 
         # Basic safety check - prevent destructive operations
-        dangerous_keywords = ["DELETE", "REMOVE", "DROP", "CREATE", "SET", "MERGE"]
+        # Use word boundaries to avoid false positives (e.g., "dataset_id" contains "set")
+        import re
+        dangerous_patterns = [
+            r'\bDELETE\b',
+            r'\bREMOVE\b',
+            r'\bDROP\b',
+            r'\bCREATE\b',
+            r'\bSET\b',
+            r'\bMERGE\b',
+        ]
         cypher_upper = cypher.upper()
-        for keyword in dangerous_keywords:
-            if keyword in cypher_upper:
+        for pattern in dangerous_patterns:
+            if re.search(pattern, cypher_upper):
                 logger.warning(f"Blocked potentially dangerous Cypher: {cypher}")
                 return None
 

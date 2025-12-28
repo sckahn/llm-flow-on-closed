@@ -146,7 +146,7 @@ export function KnowledgeBaseConfig({ configs, onChange }: KnowledgeBaseConfigPr
                           {dataset.name}
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          {dataset.document_count} documents · {dataset.word_count.toLocaleString()} words
+                          {dataset.document_count ?? 0} documents · {(dataset.word_count ?? 0).toLocaleString()} words
                         </div>
                       </div>
                     </div>

@@ -126,9 +126,14 @@ export interface Document {
   data_source_type: string;
   word_count: number;
   tokens: number;
-  indexing_status: 'waiting' | 'parsing' | 'indexing' | 'completed' | 'error';
+  indexing_status: 'waiting' | 'parsing' | 'indexing' | 'completed' | 'error' | 'paused';
   enabled: boolean;
   created_at: number;
+  // Progress tracking
+  completed_segments?: number;
+  total_segments?: number;
+  indexing_latency?: number;
+  error?: string;
 }
 
 export interface DocumentListResponse {

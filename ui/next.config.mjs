@@ -4,9 +4,10 @@ const nextConfig = {
   reactStrictMode: true,
   experimental: {
     serverActions: {
-      bodySizeLimit: '10mb',
+      bodySizeLimit: '50mb',
     },
   },
+  // API body parser config is handled by route handlers
 };
 
 export default nextConfig;

@@ -2,6 +2,7 @@ import logging
 from typing import List, Optional, Dict, Any
 from neo4j import GraphDatabase, Driver
 from neo4j.exceptions import Neo4jError
+from neo4j.time import DateTime as Neo4jDateTime
 
 from app.config import get_settings
 from app.models.entity import Entity
@@ -9,6 +10,17 @@ from app.models.relationship import Relationship
 from app.models.search import GraphNode, GraphEdge, GraphData
 
 logger = logging.getLogger(__name__)
+
+
+def _serialize_neo4j_value(value: Any) -> Any:
+    """Convert Neo4j types to JSON-serializable types"""
+    if isinstance(value, Neo4jDateTime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _serialize_neo4j_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_serialize_neo4j_value(v) for v in value]
+    return value
 
 
 class GraphStore:
@@ -146,10 +158,13 @@ class GraphStore:
 
     def create_relationships_batch(self, relationships: List[Relationship], dataset_id: str) -> List[str]:
         """Create multiple relationships in batch"""
+        # Match by entity name within the same dataset (more reliable than ID matching)
         query = """
         UNWIND $relationships as rel
-        MATCH (source:Entity {id: rel.source_id})
-        MATCH (target:Entity {id: rel.target_id})
+        MATCH (source:Entity {dataset_id: $dataset_id})
+        WHERE toLower(source.name) = toLower(rel.source_name)
+        MATCH (target:Entity {dataset_id: $dataset_id})
+        WHERE toLower(target.name) = toLower(rel.target_name)
         MERGE (source)-[r:RELATES_TO {id: rel.id}]->(target)
         SET r.type = rel.type,
             r.description = rel.description,
@@ -163,10 +178,12 @@ class GraphStore:
         """
         rel_data = []
         for r in relationships:
+            source_name = r.source_entity_name or r.source_entity_id
+            target_name = r.target_entity_name or r.target_entity_id
             rel_data.append({
-                "id": r.id or f"{r.source_entity_id}_{r.target_entity_id}_{r.type}",
-                "source_id": r.source_entity_id,
-                "target_id": r.target_entity_id,
+                "id": r.id or f"{source_name}_{target_name}_{r.type}",
+                "source_name": source_name,
+                "target_name": target_name,
                 "type": r.type,
                 "description": r.description,
                 "properties": str(r.properties),
@@ -202,9 +219,9 @@ class GraphStore:
         """Search entities by name or description"""
         cypher = """
         MATCH (e:Entity)
-        WHERE (e.name CONTAINS $query OR e.description CONTAINS $query)
+        WHERE (e.name CONTAINS $search_text OR e.description CONTAINS $search_text)
         """
-        params = {"query": query, "limit": limit}
+        params = {"search_text": query, "limit": limit}
 
         if dataset_id:
             cypher += " AND e.dataset_id = $dataset_id"
@@ -221,7 +238,7 @@ class GraphStore:
         """
 
         with self.driver.session() as session:
-            result = session.run(cypher, **params)
+            result = session.run(cypher, parameters=params)
             return [dict(record["e"]) for record in result]
 
     def get_entity_neighbors(
@@ -231,8 +248,9 @@ class GraphStore:
         limit: int = 50,
     ) -> GraphData:
         """Get entity and its neighbors up to max_depth"""
-        query = """
-        MATCH path = (start:Entity {id: $entity_id})-[r*1..$max_depth]-(neighbor:Entity)
+        # Note: Neo4j doesn't allow parameters in relationship depth, so we construct the query
+        query = f"""
+        MATCH path = (start:Entity {{id: $entity_id}})-[r*1..{max_depth}]-(neighbor:Entity)
         WITH start, neighbor, relationships(path) as rels, length(path) as depth
         ORDER BY depth
         LIMIT $limit
@@ -242,11 +260,11 @@ class GraphStore:
         edges = []
 
         with self.driver.session() as session:
-            result = session.run(query, entity_id=entity_id, max_depth=max_depth, limit=limit)
+            result = session.run(query, entity_id=entity_id, limit=limit)
 
             for record in result:
                 # Add start node
-                start = dict(record["start"])
+                start = _serialize_neo4j_value(dict(record["start"]))
                 if start["id"] not in nodes:
                     nodes[start["id"]] = GraphNode(
                         id=start["id"],
@@ -256,7 +274,7 @@ class GraphStore:
                     )
 
                 # Add neighbor node
-                neighbor = dict(record["neighbor"])
+                neighbor = _serialize_neo4j_value(dict(record["neighbor"]))
                 if neighbor["id"] not in nodes:
                     nodes[neighbor["id"]] = GraphNode(
                         id=neighbor["id"],
@@ -265,17 +283,20 @@ class GraphStore:
                         properties=neighbor,
                     )
 
-                # Add edges
+                # Add edges - use entity IDs, not Neo4j element IDs
                 for rel in record["rels"]:
-                    edge_id = f"{rel.start_node.element_id}_{rel.end_node.element_id}"
+                    # Get the actual entity IDs from the relationship's start/end nodes
+                    start_node_id = dict(rel.start_node).get("id", str(rel.start_node.element_id))
+                    end_node_id = dict(rel.end_node).get("id", str(rel.end_node.element_id))
+                    edge_id = f"{start_node_id}_{end_node_id}_{rel.get('type', 'RELATES_TO')}"
                     edges.append(GraphEdge(
                         id=edge_id,
-                        source=str(rel.start_node.element_id),
-                        target=str(rel.end_node.element_id),
+                        source=start_node_id,
+                        target=end_node_id,
                         label=rel.get("type", "RELATES_TO"),
                         type=rel.get("type", "RELATES_TO"),
                         weight=rel.get("weight", 1.0),
-                        properties=dict(rel),
+                        properties=_serialize_neo4j_value(dict(rel)),
                     ))
 
         return GraphData(
@@ -307,7 +328,7 @@ class GraphStore:
             # Get nodes
             result = session.run(node_query, dataset_id=dataset_id, limit=limit)
             for record in result:
-                e = dict(record["e"])
+                e = _serialize_neo4j_value(dict(record["e"]))
                 nodes.append(GraphNode(
                     id=e["id"],
                     label=e["name"],
@@ -318,7 +339,7 @@ class GraphStore:
             # Get edges
             result = session.run(edge_query, dataset_id=dataset_id, limit=limit)
             for record in result:
-                rel = dict(record["r"])
+                rel = _serialize_neo4j_value(dict(record["r"]))
                 edges.append(GraphEdge(
                     id=f"{record['source']}_{record['target']}",
                     source=record["source"],

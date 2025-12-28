@@ -1,12 +1,14 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
+import { Progress } from '@/components/ui/progress';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
 import {
   ArrowLeft,
@@ -17,8 +19,13 @@ import {
   CheckCircle,
   Clock,
   AlertCircle,
+  Network,
+  Download,
+  FolderUp,
+  RefreshCw,
 } from 'lucide-react';
-import { getDataset, getDocuments, uploadDocument, deleteDocument } from '@/lib/api/datasets';
+import { getDataset, getDocuments, uploadDocument, deleteDocument, retryDocumentIndexing, getDocumentProgress, type DocumentProgress as DocProgressType } from '@/lib/api/datasets';
+import { graphragApi, type BuildGraphRAGProgress } from '@/lib/api/graphrag';
 import type { Document } from '@/types/api';
 import {
   Table,
@@ -43,9 +50,89 @@ const statusIcons: Record<string, React.ReactNode> = {
   completed: <CheckCircle className="h-4 w-4 text-green-500" />,
   waiting: <Clock className="h-4 w-4 text-yellow-500" />,
   parsing: <Loader2 className="h-4 w-4 text-blue-500 animate-spin" />,
+  splitting: <Loader2 className="h-4 w-4 text-purple-500 animate-spin" />,
   indexing: <Loader2 className="h-4 w-4 text-blue-500 animate-spin" />,
+  paused: <Clock className="h-4 w-4 text-orange-500" />,
   error: <AlertCircle className="h-4 w-4 text-red-500" />,
 };
+
+// Progress component for document indexing with real-time updates
+function DocumentProgress({ doc, datasetId }: { doc: Document; datasetId: string }) {
+  const isProcessing = doc.indexing_status === 'parsing' || doc.indexing_status === 'indexing' || doc.indexing_status === 'splitting';
+
+  // Poll progress API for processing documents
+  const { data: progressData } = useQuery({
+    queryKey: ['document-progress', datasetId, doc.id],
+    queryFn: () => getDocumentProgress(datasetId, doc.id),
+    enabled: isProcessing,
+    refetchInterval: isProcessing ? 1000 : false, // Poll every second while processing
+    retry: false,
+  });
+
+  const getProgress = () => {
+    // Use real-time progress if available
+    if (progressData && progressData.progress > 0) {
+      return progressData.progress;
+    }
+
+    // Fallback to segment-based progress
+    switch (doc.indexing_status) {
+      case 'completed':
+        return 100;
+      case 'indexing':
+        if (doc.completed_segments && doc.total_segments) {
+          return Math.round((doc.completed_segments / doc.total_segments) * 100);
+        }
+        return 75;
+      case 'splitting':
+        return 50;
+      case 'parsing':
+        return 25;
+      case 'waiting':
+      case 'paused':
+        return 0;
+      case 'error':
+        return 0;
+      default:
+        return 0;
+    }
+  };
+
+  const progress = getProgress();
+  const message = progressData?.message || '';
+
+  return (
+    <div className="flex flex-col gap-1 min-w-[150px]">
+      <div className="flex items-center gap-2">
+        <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+          {isProcessing ? (
+            <div
+              className="h-full bg-blue-500 rounded-full transition-all duration-300"
+              style={{ width: `${progress}%` }}
+            />
+          ) : doc.indexing_status === 'error' ? (
+            <div className="h-full bg-red-500 rounded-full w-full" />
+          ) : (
+            <div
+              className={`h-full rounded-full transition-all duration-300 ${
+                doc.indexing_status === 'completed' ? 'bg-green-500' : 'bg-muted-foreground/30'
+              }`}
+              style={{ width: `${progress}%` }}
+            />
+          )}
+        </div>
+        <span className="text-xs text-muted-foreground w-10 text-right">
+          {doc.indexing_status === 'error' ? 'Error' : `${progress}%`}
+        </span>
+      </div>
+      {message && isProcessing && (
+        <span className="text-xs text-muted-foreground truncate max-w-[150px]" title={message}>
+          {message}
+        </span>
+      )}
+    </div>
+  );
+}
 
 export default function DatasetDetailPage() {
   const params = useParams();
@@ -55,6 +142,19 @@ export default function DatasetDetailPage() {
   const queryClient = useQueryClient();
   const [deleteTarget, setDeleteTarget] = useState<Document | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [buildProgress, setBuildProgress] = useState<BuildGraphRAGProgress>({
+    dataset_id: '',
+    status: 'idle',
+    total_documents: 0,
+    completed_documents: 0,
+    total_segments: 0,
+    completed_segments: 0,
+    current_document: '',
+    entities_extracted: 0,
+    relationships_extracted: 0,
+  });
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   const { data: dataset, isLoading: datasetLoading } = useQuery({
     queryKey: ['dataset', datasetId],
@@ -90,6 +190,189 @@ export default function DatasetDetailPage() {
       });
     },
   });
+
+  const retryMutation = useMutation({
+    mutationFn: (docId: string) => retryDocumentIndexing(datasetId, docId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['documents', datasetId] });
+      toast({ title: 'Retry started' });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Failed to retry',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
+  // GraphRAG stats query
+  const { data: graphragStats, refetch: refetchGraphragStats } = useQuery({
+    queryKey: ['graphrag-stats', datasetId],
+    queryFn: () => graphragApi.getStats(datasetId),
+    enabled: !!datasetId,
+    retry: false,
+  });
+
+  // Check and restore build progress on page load
+  useEffect(() => {
+    const checkProgress = async () => {
+      try {
+        const progress = await graphragApi.getBuildProgress(datasetId);
+        if (progress.status === 'building') {
+          setBuildProgress(progress);
+        }
+      } catch (error) {
+        console.error('Failed to check build progress:', error);
+      }
+    };
+    checkProgress();
+  }, [datasetId]);
+
+  // Poll build progress when building
+  useEffect(() => {
+    if (buildProgress.status !== 'building') return;
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const progress = await graphragApi.getBuildProgress(datasetId);
+        setBuildProgress(progress);
+
+        if (progress.status === 'completed') {
+          refetchGraphragStats();
+          toast({
+            title: 'GraphRAG Build Complete',
+            description: `Extracted ${progress.entities_extracted} entities and ${progress.relationships_extracted} relationships.`,
+          });
+        } else if (progress.status === 'error') {
+          toast({
+            title: 'Build Failed',
+            description: progress.error || 'Unknown error',
+            variant: 'destructive',
+          });
+        }
+      } catch (error) {
+        console.error('Failed to poll build progress:', error);
+      }
+    }, 2000);
+
+    return () => clearInterval(pollInterval);
+  }, [buildProgress.status, datasetId, toast, refetchGraphragStats]);
+
+  // Build GraphRAG function - calls backend API (no browser memory usage)
+  const handleBuildGraphRAG = useCallback(async () => {
+    if (!documents?.data || documents.data.length === 0) {
+      toast({
+        title: 'No documents',
+        description: 'Upload documents first before building GraphRAG index.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const completedDocs = documents.data.filter(
+      (doc) => doc.indexing_status === 'completed'
+    );
+
+    if (completedDocs.length === 0) {
+      toast({
+        title: 'No indexed documents',
+        description: 'Wait for documents to finish indexing first.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      // Start build on backend - no data loaded in browser!
+      await graphragApi.startBuild({ dataset_id: datasetId });
+
+      setBuildProgress({
+        dataset_id: datasetId,
+        status: 'building',
+        total_documents: completedDocs.length,
+        completed_documents: 0,
+        total_segments: 0,
+        completed_segments: 0,
+        current_document: 'Starting build...',
+        entities_extracted: 0,
+        relationships_extracted: 0,
+      });
+
+      toast({
+        title: 'Build Started',
+        description: 'GraphRAG index is building in background. This page will update automatically.',
+      });
+    } catch (error) {
+      toast({
+        title: 'Failed to start build',
+        description: (error as Error).message,
+        variant: 'destructive',
+      });
+    }
+  }, [documents, datasetId, toast]);
+
+  // Export GraphRAG data
+  const handleExportGraphRAG = useCallback(async () => {
+    if (!graphragStats) {
+      toast({
+        title: 'No GraphRAG data',
+        description: 'Build GraphRAG index first before exporting.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setExporting(true);
+    try {
+      const blob = await graphragApi.exportDataset(datasetId);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `graphrag_${datasetId}_${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      toast({ title: 'Export successful' });
+    } catch (error) {
+      toast({
+        title: 'Export failed',
+        description: (error as Error).message,
+        variant: 'destructive',
+      });
+    } finally {
+      setExporting(false);
+    }
+  }, [datasetId, graphragStats, toast]);
+
+  // Import GraphRAG data
+  const handleImportGraphRAG = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      setImporting(true);
+      try {
+        const result = await graphragApi.importDataset(file, datasetId, false);
+        toast({
+          title: 'Import successful',
+          description: result.message,
+        });
+        refetchGraphragStats();
+      } catch (error) {
+        toast({
+          title: 'Import failed',
+          description: (error as Error).message,
+          variant: 'destructive',
+        });
+      } finally {
+        setImporting(false);
+        e.target.value = '';
+      }
+    },
+    [datasetId, toast, refetchGraphragStats]
+  );
 
   const handleFileUpload = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -175,9 +458,21 @@ export default function DatasetDetailPage() {
         <div className="flex-1">
           <h1 className="font-semibold">{dataset.name}</h1>
           <p className="text-sm text-muted-foreground">
-            {dataset.document_count} documents, {dataset.word_count.toLocaleString()} words
+            {dataset.document_count ?? 0} documents, {(dataset.word_count ?? 0).toLocaleString()} words
           </p>
         </div>
+        <Button
+          variant="outline"
+          onClick={handleBuildGraphRAG}
+          disabled={buildProgress.status === 'building' || !documents?.data?.length}
+        >
+          {buildProgress.status === 'building' ? (
+            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+          ) : (
+            <Network className="h-4 w-4 mr-2" />
+          )}
+          Build GraphRAG
+        </Button>
         <label>
           <input
             type="file"
@@ -201,6 +496,114 @@ export default function DatasetDetailPage() {
       </header>
 
       <div className="flex-1 p-6 overflow-auto">
+        {/* GraphRAG Status Card */}
+        {(graphragStats || buildProgress.status !== 'idle') && (
+          <Card className="mb-6">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Network className="h-4 w-4" />
+                GraphRAG Index
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {buildProgress.status === 'building' && (
+                <div className="space-y-2 mb-4">
+                  <div className="flex justify-between text-sm">
+                    <span className="truncate flex-1">{buildProgress.current_document || 'Starting...'}</span>
+                    <span className="ml-2 whitespace-nowrap">
+                      {buildProgress.completed_segments} / {buildProgress.total_segments || '?'}
+                    </span>
+                  </div>
+                  <Progress
+                    value={buildProgress.total_segments > 0
+                      ? (buildProgress.completed_segments / buildProgress.total_segments) * 100
+                      : 0
+                    }
+                  />
+                  <div className="flex justify-between text-xs text-muted-foreground">
+                    <span>Documents: {buildProgress.completed_documents}/{buildProgress.total_documents}</span>
+                    <span>Entities: {buildProgress.entities_extracted} | Relations: {buildProgress.relationships_extracted}</span>
+                  </div>
+                </div>
+              )}
+              {buildProgress.status === 'completed' && !graphragStats && (
+                <div className="flex items-center gap-2 text-sm text-green-600 mb-4">
+                  <CheckCircle className="h-4 w-4" />
+                  Build completed! Refreshing stats...
+                </div>
+              )}
+              {graphragStats && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="text-center p-3 bg-muted rounded-lg">
+                      <div className="text-2xl font-bold text-primary">
+                        {graphragStats.graph?.entity_count ?? 0}
+                      </div>
+                      <div className="text-xs text-muted-foreground">Entities</div>
+                    </div>
+                    <div className="text-center p-3 bg-muted rounded-lg">
+                      <div className="text-2xl font-bold text-primary">
+                        {graphragStats.graph?.relationship_count ?? 0}
+                      </div>
+                      <div className="text-xs text-muted-foreground">Relationships</div>
+                    </div>
+                    <div className="text-center p-3 bg-muted rounded-lg">
+                      <div className="text-2xl font-bold text-primary">
+                        {((graphragStats.vector as { total_entities?: number; count?: number })?.total_entities ?? (graphragStats.vector as { count?: number })?.count ?? 0)}
+                      </div>
+                      <div className="text-xs text-muted-foreground">Vectors</div>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      className="flex-1"
+                      onClick={() => router.push(`/knowledge-graph?dataset=${datasetId}`)}
+                    >
+                      <Network className="h-4 w-4 mr-2" />
+                      View Graph
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={handleExportGraphRAG}
+                      disabled={exporting}
+                    >
+                      {exporting ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Download className="h-4 w-4" />
+                      )}
+                    </Button>
+                    <label>
+                      <input
+                        type="file"
+                        className="hidden"
+                        accept=".json"
+                        onChange={handleImportGraphRAG}
+                        disabled={importing}
+                      />
+                      <Button asChild variant="outline" disabled={importing}>
+                        <span>
+                          {importing ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <FolderUp className="h-4 w-4" />
+                          )}
+                        </span>
+                      </Button>
+                    </label>
+                  </div>
+                </div>
+              )}
+              {!graphragStats && buildProgress.status === 'idle' && (
+                <p className="text-sm text-muted-foreground">
+                  No GraphRAG index yet. Click &quot;Build GraphRAG&quot; to create one.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
         <div
           className="border-2 border-dashed rounded-lg p-8 mb-6 text-center transition-colors hover:border-primary/50"
           onDragOver={(e) => e.preventDefault()}
@@ -231,9 +634,10 @@ export default function DatasetDetailPage() {
               <TableRow>
                 <TableHead>Name</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead>Progress</TableHead>
                 <TableHead>Words</TableHead>
                 <TableHead>Created</TableHead>
-                <TableHead className="w-12"></TableHead>
+                <TableHead className="w-20"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -261,18 +665,34 @@ export default function DatasetDetailPage() {
                       </Badge>
                     </div>
                   </TableCell>
-                  <TableCell>{doc.word_count.toLocaleString()}</TableCell>
+                  <TableCell>
+                    <DocumentProgress doc={doc} datasetId={datasetId} />
+                  </TableCell>
+                  <TableCell>{(doc.word_count ?? 0).toLocaleString()}</TableCell>
                   <TableCell>
                     {new Date(doc.created_at * 1000).toLocaleDateString()}
                   </TableCell>
                   <TableCell>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => setDeleteTarget(doc)}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    <div className="flex items-center gap-1">
+                      {(doc.indexing_status === 'waiting' || doc.indexing_status === 'error') && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => retryMutation.mutate(doc.id)}
+                          disabled={retryMutation.isPending}
+                          title="Retry indexing"
+                        >
+                          <RefreshCw className={`h-4 w-4 ${retryMutation.isPending ? 'animate-spin' : ''}`} />
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => setDeleteTarget(doc)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}

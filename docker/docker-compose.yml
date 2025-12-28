@@ -157,8 +157,10 @@ services:
       - neo4j-plugins:/plugins
     healthcheck:
       <<: *healthcheck-defaults
-      test: ["CMD", "curl", "-f", "http://localhost:7474"]
-      start_period: 60s
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      start_period: 120s
+      interval: 15s
+      retries: 10
     ports:
       - "7474:7474"
       - "7687:7687"
@@ -229,7 +231,10 @@ services:
   # ============================================
 
   dify-api:
-    image: langgenius/dify-api:0.11.0
+    build:
+      context: ./dify-patches
+      dockerfile: Dockerfile
+    image: llmflow-dify-api:0.11.0-custom
     container_name: llmflow-dify-api
     restart: unless-stopped
     environment:
@@ -238,11 +243,14 @@ services:
       LOG_LEVEL: INFO
       SECRET_KEY: ${DIFY_SECRET_KEY}
       INIT_PASSWORD: ${DIFY_INIT_PASSWORD}
-      CONSOLE_WEB_URL: http://localhost:3030
+      CONSOLE_WEB_URL: http://localhost:3033
       SERVICE_API_URL: http://localhost:5001
-      APP_WEB_URL: http://localhost:3030
-      CONSOLE_CORS_ALLOW_ORIGINS: http://localhost:3030,http://127.0.0.1:3030,*
-      WEB_API_CORS_ALLOW_ORIGINS: http://localhost:3030,http://127.0.0.1:3030,*
+      APP_WEB_URL: http://localhost:3033
+      CONSOLE_CORS_ALLOW_ORIGINS: http://localhost:3033,http://127.0.0.1:3033,*
+      WEB_API_CORS_ALLOW_ORIGINS: http://localhost:3033,http://127.0.0.1:3033,*
+      # File upload limits
+      UPLOAD_FILE_SIZE_LIMIT: 100
+      UPLOAD_FILE_BATCH_LIMIT: 10
       # Database
       DB_HOST: postgresql
       DB_PORT: 5432
@@ -265,17 +273,25 @@ services:
       S3_USE_SSL: "false"
       # Vector Store
       VECTOR_STORE: milvus
-      MILVUS_HOST: milvus-standalone
-      MILVUS_PORT: 19530
+      MILVUS_URI: http://milvus-standalone:19530
+      MILVUS_USER: root
+      MILVUS_PASSWORD: Milvus
+      # ETL - Use Unstructured for better PDF parsing with OCR
+      ETL_TYPE: Unstructured
+      UNSTRUCTURED_API_URL: http://unstructured:8000/general/v0/general
       # Observability
       LANGFUSE_PUBLIC_KEY: ""
       LANGFUSE_SECRET_KEY: ""
       LANGFUSE_HOST: http://langfuse:3000
     volumes:
       - dify-storage:/app/api/storage
+      # Patch for Korean OCR support in PDF extraction
+      - ./dify-patches/unstructured_pdf_extractor.py:/app/api/core/rag/extractor/unstructured/unstructured_pdf_extractor.py:ro
     depends_on:
       postgresql:
         condition: service_healthy
+      unstructured:
+        condition: service_started
       redis:
         condition: service_healthy
       milvus-standalone:
@@ -291,7 +307,7 @@ services:
       - llmflow-inference
 
   dify-worker:
-    image: langgenius/dify-api:0.11.0
+    image: llmflow-dify-api:0.11.0-custom
     container_name: llmflow-dify-worker
     restart: unless-stopped
     environment:
@@ -299,6 +315,9 @@ services:
       MODE: worker
       LOG_LEVEL: INFO
       SECRET_KEY: ${DIFY_SECRET_KEY}
+      # Celery worker concurrency (reduce for lower resource usage)
+      CELERY_WORKER_CONCURRENCY: 2
+      CELERY_WORKER_PREFETCH_MULTIPLIER: 1
       # Database
       DB_HOST: postgresql
       DB_PORT: 5432
@@ -321,10 +340,21 @@ services:
       S3_USE_SSL: "false"
       # Vector Store
       VECTOR_STORE: milvus
-      MILVUS_HOST: milvus-standalone
-      MILVUS_PORT: 19530
+      MILVUS_URI: http://milvus-standalone:19530
+      MILVUS_USER: root
+      MILVUS_PASSWORD: Milvus
+      # ETL - Use Unstructured for better PDF parsing with OCR
+      ETL_TYPE: Unstructured
+      UNSTRUCTURED_API_URL: http://unstructured:8000/general/v0/general
     volumes:
       - dify-storage:/app/api/storage
+      # Patch for Korean OCR support in PDF extraction
+      - ./dify-patches/unstructured_pdf_extractor.py:/app/api/core/rag/extractor/unstructured/unstructured_pdf_extractor.py:ro
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2'
     depends_on:
       - dify-api
     networks:
@@ -338,27 +368,42 @@ services:
   #   container_name: llmflow-dify-web
   #   ...
 
+  # Nginx proxy for Dify API (handles CORS)
+  dify-nginx:
+    image: nginx:alpine
+    container_name: llmflow-dify-nginx
+    restart: unless-stopped
+    volumes:
+      - ./configs/nginx/dify-proxy.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - dify-api
+    ports:
+      - "5002:80"
+    networks:
+      - llmflow-frontend
+      - llmflow-backend
+
   # LLMFlow UI - Custom frontend (replaces dify-web)
   llmflow-ui:
-    build:
-      context: ../ui
-      dockerfile: Dockerfile
-      args:
-        NEXT_PUBLIC_API_URL: http://localhost:5001
-        NEXT_PUBLIC_APP_NAME: LLMFlow
+    image: node:20-alpine
     container_name: llmflow-ui
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
     restart: unless-stopped
     environment:
       <<: *common-env
-      NEXT_PUBLIC_API_URL: http://localhost:5001
+      NEXT_PUBLIC_API_URL: http://localhost:5002
       NEXT_PUBLIC_APP_NAME: LLMFlow
+      DIFY_API_URL: http://dify-nginx:80
     depends_on:
-      - dify-api
+      - dify-nginx
+    volumes:
+      - ../ui:/app
     healthcheck:
       <<: *healthcheck-defaults
-      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000"]
     ports:
-      - "3030:3000"
+      - "3033:3000"
     networks:
       - llmflow-frontend
       - llmflow-backend
@@ -368,7 +413,7 @@ services:
   # ============================================
 
   vllm:
-    image: vllm/vllm-openai:latest
+    image: vllm/vllm-openai:v0.6.4.post1
     container_name: llmflow-vllm
     restart: unless-stopped
     environment:
@@ -399,7 +444,7 @@ services:
       # - --quantization
       # - fp8
     volumes:
-      - ../models:/models:ro
+      - ../models:/models
     deploy:
       resources:
         reservations:
@@ -417,11 +462,13 @@ services:
       - llmflow-inference
 
   tei-embedding:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
     container_name: llmflow-tei-embedding
     restart: unless-stopped
     environment:
       <<: *common-env
+      HF_HUB_URL: https://huggingface.co
+      HF_ENDPOINT: https://huggingface.co
     command:
       - --model-id
       - ${TEI_EMBEDDING_MODEL:-BAAI/bge-m3}
@@ -438,16 +485,18 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:80/health"]
       start_period: 120s
     ports:
-      - "8080:80"
+      - "8083:80"
     networks:
       - llmflow-inference
 
   tei-reranker:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
+    image: ghcr.io/huggingface/text-embeddings-inference:1.6
     container_name: llmflow-tei-reranker
     restart: unless-stopped
     environment:
       <<: *common-env
+      HF_HUB_URL: https://huggingface.co
+      HF_ENDPOINT: https://huggingface.co
     command:
       - --model-id
       - ${TEI_RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
@@ -457,6 +506,13 @@ services:
       - "32"
     volumes:
       - tei-models:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     healthcheck:
       <<: *healthcheck-defaults
       test: ["CMD", "curl", "-f", "http://localhost:80/health"]
@@ -473,7 +529,17 @@ services:
     environment:
       <<: *common-env
       UNSTRUCTURED_PARALLEL_MODE_ENABLED: "true"
-      UNSTRUCTURED_PARALLEL_MODE_THREADS: "4"
+      UNSTRUCTURED_PARALLEL_MODE_THREADS: "2"
+      UNSTRUCTURED_PARALLEL_MODE_URL: "http://localhost:8000/general/v0/general"
+      # OCR and hi_res strategy for scanned PDFs
+      UNSTRUCTURED_PDF_STRATEGY: "hi_res"
+      UNSTRUCTURED_HI_RES_MODEL_NAME: "yolox"
+      UNSTRUCTURED_OCR_LANGUAGES: "kor+eng"
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: '4'
     healthcheck:
       <<: *healthcheck-defaults
       test: ["CMD", "curl", "-f", "http://localhost:8000/healthcheck"]
@@ -495,26 +561,34 @@ services:
     environment:
       <<: *common-env
       # Neo4j connection
-      NEO4J_URI: bolt://neo4j:7687
-      NEO4J_USER: neo4j
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-password}
+      GRAPHRAG_NEO4J_URI: bolt://neo4j:7687
+      GRAPHRAG_NEO4J_USER: neo4j
+      GRAPHRAG_NEO4J_PASSWORD: ${NEO4J_PASSWORD:-neo4j_llmflow}
       # Milvus connection
-      MILVUS_HOST: milvus-standalone
-      MILVUS_PORT: 19530
+      GRAPHRAG_MILVUS_HOST: milvus-standalone
+      GRAPHRAG_MILVUS_PORT: 19530
       # LLM (vLLM) - OpenAI compatible API
-      LLM_API_BASE: http://vllm:8000/v1
-      LLM_API_KEY: ${VLLM_API_KEY}
-      LLM_MODEL: ${VLLM_MODEL_NAME:-Meta-Llama-3.1-8B-Instruct}
+      GRAPHRAG_LLM_API_BASE: http://vllm:8000/v1
+      GRAPHRAG_LLM_API_KEY: ${VLLM_API_KEY}
+      GRAPHRAG_LLM_MODEL: ${VLLM_MODEL_NAME:-TinyLlama-1.1B-Chat-v1.0}
       # Embedding (TEI)
-      EMBEDDING_API_BASE: http://tei-embedding:80
+      GRAPHRAG_EMBEDDING_API_BASE: http://tei-embedding:80
       # Search parameters
-      VECTOR_TOP_K: 20
-      GRAPH_MAX_DEPTH: 3
-      RRF_K: 60
+      GRAPHRAG_VECTOR_TOP_K: 20
+      GRAPHRAG_GRAPH_MAX_DEPTH: 3
+      GRAPHRAG_RRF_K: 60
+      # Dify PostgreSQL (for direct segment access)
+      DIFY_DB_HOST: postgresql
+      DIFY_DB_PORT: 5432
+      DIFY_DB_USER: ${POSTGRES_USER:-llmflow}
+      DIFY_DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres_llmflow}
+      DIFY_DB_NAME: ${DIFY_DB_NAME:-dify}
     depends_on:
       neo4j:
         condition: service_healthy
       milvus-standalone:
+        condition: service_healthy
+      postgresql:
         condition: service_healthy
     healthcheck:
       <<: *healthcheck-defaults
@@ -568,7 +642,7 @@ services:
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
-    command: mlflow server --host 0.0.0.0 --port 5000
+    command: sh -c "pip install psycopg2-binary && mlflow server --host 0.0.0.0 --port 5000"
     depends_on:
       postgresql:
         condition: service_healthy

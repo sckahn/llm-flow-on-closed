@@ -1,4 +1,5 @@
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5001';
+// Use nginx proxy which handles CORS
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5002';
 
 interface RequestOptions extends RequestInit {
   params?: Record<string, string>;
@@ -48,6 +49,11 @@ class ApiClient {
       throw new Error(error.message || `HTTP ${response.status}`);
     }
 
+    // Handle 204 No Content
+    if (response.status === 204) {
+      return { result: 'success' } as T;
+    }
+
     return response.json();
   }
 
@@ -71,6 +77,13 @@ class ApiClient {
 
   async delete<T>(endpoint: string): Promise<T> {
     return this.request<T>(endpoint, { method: 'DELETE' });
+  }
+
+  async patch<T>(endpoint: string, data?: unknown): Promise<T> {
+    return this.request<T>(endpoint, {
+      method: 'PATCH',
+      body: data ? JSON.stringify(data) : undefined,
+    });
   }
 
   async upload<T>(endpoint: string, formData: FormData): Promise<T> {

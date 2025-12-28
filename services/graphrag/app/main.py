@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.routers import extract_router, ingest_router, search_router, visualize_router
+from app.routers import extract_router, ingest_router, search_router, visualize_router, backup_router, build_router
 
 # Configure logging
 logging.basicConfig(
@@ -47,6 +47,8 @@ app.include_router(extract_router, prefix="/api/graphrag")
 app.include_router(ingest_router, prefix="/api/graphrag")
 app.include_router(search_router, prefix="/api/graphrag")
 app.include_router(visualize_router, prefix="/api/graphrag")
+app.include_router(backup_router, prefix="/api/graphrag")
+app.include_router(build_router, prefix="/api/graphrag")
 
 
 @app.get("/health")

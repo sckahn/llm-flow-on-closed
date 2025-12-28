@@ -116,9 +116,14 @@ class VectorStore:
         if not entities:
             return []
 
-        # Generate embeddings
+        # Generate embeddings in batches to avoid 413 Payload Too Large
         texts = [f"{e.name}: {e.description or ''}" for e in entities]
-        embeddings = await self.get_embeddings_batch(texts)
+        embeddings = []
+        batch_size = 10  # Process 10 entities at a time
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i + batch_size]
+            batch_embeddings = await self.get_embeddings_batch(batch_texts)
+            embeddings.extend(batch_embeddings)
 
         ids = []
         names = []

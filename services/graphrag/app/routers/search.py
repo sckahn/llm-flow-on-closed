@@ -76,12 +76,16 @@ async def natural_language_query(query: NaturalLanguageQuery):
         nl_to_cypher = get_nl_to_cypher()
         narrative_generator = get_narrative_generator()
         graph_store = get_graph_store()
+        hybrid_search = get_hybrid_search()
 
         # Convert to Cypher and execute
         nl_result = nl_to_cypher.execute_nl_query(
             question=query.question,
             dataset_id=query.dataset_id,
         )
+
+        graph = None
+        used_fallback = False
 
         # Get graph data for visualization
         if nl_result["success"] and nl_result["results"]:
@@ -106,22 +110,50 @@ async def natural_language_query(query: NaturalLanguageQuery):
                     dataset_id=query.dataset_id,
                     limit=50,
                 ) if query.dataset_id else None
-        else:
-            graph = None
+
+        # Fallback to hybrid search if Cypher returned no results
+        if not graph or (not graph.nodes):
+            used_fallback = True
+            try:
+                # Use hybrid search (vector + graph text search)
+                search_results = await hybrid_search.search_with_expansion(
+                    query=query.question,
+                    dataset_id=query.dataset_id,
+                    top_k=10,
+                    expansion_depth=2,
+                )
+
+                if search_results.results:
+                    # Get graph from first result
+                    first_result = search_results.results[0]
+                    graph = graph_store.get_entity_neighbors(
+                        entity_id=first_result.id,
+                        max_depth=2,
+                        limit=50,
+                    )
+                elif query.dataset_id:
+                    # Last resort: get dataset graph
+                    graph = graph_store.get_graph_by_dataset(
+                        dataset_id=query.dataset_id,
+                        limit=50,
+                    )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"Fallback search failed: {e}")
 
         # Generate narrative if requested
-        if query.include_narrative and graph:
+        if query.include_narrative and graph and graph.nodes:
             response = narrative_generator.answer_question(
                 question=query.question,
                 graph=graph,
-                cypher_query=nl_result.get("cypher"),
+                cypher_query=nl_result.get("cypher") if not used_fallback else None,
             )
             return response
         else:
             # Return basic response
             return NarrativeResponse(
                 question=query.question,
-                answer=str(nl_result.get("results", [])),
+                answer=str(nl_result.get("results", [])) if nl_result["results"] else "관련 정보를 찾지 못했습니다.",
                 narrative="",
                 graph=graph,
                 sources=[],

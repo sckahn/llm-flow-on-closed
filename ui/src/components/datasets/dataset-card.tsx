@@ -71,7 +71,7 @@ export function DatasetCard({ dataset, onDelete }: DatasetCardProps) {
             <span>{dataset.document_count} documents</span>
           </div>
           <div>
-            <span>{dataset.word_count.toLocaleString()} words</span>
+            <span>{(dataset.word_count ?? 0).toLocaleString()} words</span>
           </div>
         </div>
       </CardContent>

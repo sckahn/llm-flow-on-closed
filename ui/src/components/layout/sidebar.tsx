@@ -9,7 +9,6 @@ import {
   Database,
   Network,
   Key,
-  FileText,
   Settings,
   LogOut,
   ChevronLeft,
@@ -26,7 +25,6 @@ const navigation = [
   { name: 'Datasets', href: '/datasets', icon: Database },
   { name: 'Knowledge Graph', href: '/knowledge-graph', icon: Network },
   { name: 'API Keys', href: '/api-keys', icon: Key },
-  { name: 'Logs', href: '/logs', icon: FileText },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];
 

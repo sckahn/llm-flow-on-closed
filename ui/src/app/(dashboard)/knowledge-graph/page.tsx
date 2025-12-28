@@ -1,18 +1,63 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { Network, Search, BookOpen } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { NaturalQuery, GraphViewer, NarrativeView, GraphStats } from '@/components/graphrag';
-import { NarrativeResponse, GraphNode, GraphData } from '@/lib/api/graphrag';
+import { NarrativeResponse, GraphNode, GraphData, getDatasetGraph } from '@/lib/api/graphrag';
+import { getDatasets } from '@/lib/api/datasets';
+import type { Dataset } from '@/types/api';
 
 export default function KnowledgeGraphPage() {
-  const [selectedDataset, setSelectedDataset] = useState<string | undefined>(undefined);
+  const searchParams = useSearchParams();
+  const datasetIdFromUrl = searchParams.get('dataset');
+
+  const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [selectedDataset, setSelectedDataset] = useState<string | undefined>(
+    datasetIdFromUrl || undefined
+  );
   const [queryResults, setQueryResults] = useState<NarrativeResponse | null>(null);
+  const [datasetGraphData, setDatasetGraphData] = useState<GraphData | null>(null);
+  const [isLoadingGraph, setIsLoadingGraph] = useState(false);
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState('explore');
+
+  // Load datasets on mount
+  useEffect(() => {
+    getDatasets(1, 100)
+      .then((response) => setDatasets(response.data || []))
+      .catch(console.error);
+  }, []);
+
+  // Update selected dataset from URL
+  useEffect(() => {
+    if (datasetIdFromUrl) {
+      setSelectedDataset(datasetIdFromUrl);
+    }
+  }, [datasetIdFromUrl]);
+
+  // Load dataset graph when dataset is selected
+  useEffect(() => {
+    if (selectedDataset) {
+      setIsLoadingGraph(true);
+      getDatasetGraph(selectedDataset, 100)
+        .then((data) => {
+          setDatasetGraphData(data);
+        })
+        .catch((err) => {
+          console.error('Failed to load dataset graph:', err);
+          setDatasetGraphData(null);
+        })
+        .finally(() => {
+          setIsLoadingGraph(false);
+        });
+    } else {
+      setDatasetGraphData(null);
+    }
+  }, [selectedDataset]);
 
   // Handle natural language query results
   const handleQueryResults = useCallback((results: NarrativeResponse | null) => {
@@ -31,8 +76,10 @@ export default function KnowledgeGraphPage() {
     // Could also navigate to entity details or expand graph
   }, []);
 
-  // Get graph data from query results
-  const graphData: GraphData | null = queryResults?.graph || null;
+  // Get graph data from query results or dataset
+  const queryGraphData: GraphData | null = queryResults?.graph || null;
+  // Use dataset graph for visualization, query graph for explore results
+  const visualizeGraphData: GraphData | null = datasetGraphData || queryGraphData;
 
   return (
     <div className="container mx-auto py-6 space-y-6">
@@ -48,13 +95,17 @@ export default function KnowledgeGraphPage() {
           </p>
         </div>
         <div className="flex items-center gap-4">
-          <Select value={selectedDataset} onValueChange={setSelectedDataset}>
-            <SelectTrigger className="w-[200px]">
+          <Select value={selectedDataset || 'all'} onValueChange={(v) => setSelectedDataset(v === 'all' ? undefined : v)}>
+            <SelectTrigger className="w-[250px]">
               <SelectValue placeholder="데이터셋 선택" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">전체 데이터셋</SelectItem>
-              {/* Dataset options would be loaded dynamically */}
+              {datasets.map((ds) => (
+                <SelectItem key={ds.id} value={ds.id}>
+                  {ds.name}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>
@@ -101,7 +152,7 @@ export default function KnowledgeGraphPage() {
           </Card>
 
           {/* Graph Visualization for Query Results */}
-          {graphData && (
+          {queryGraphData && (
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -114,7 +165,7 @@ export default function KnowledgeGraphPage() {
               </CardHeader>
               <CardContent>
                 <GraphViewer
-                  data={graphData}
+                  data={queryGraphData}
                   onNodeClick={handleNodeClick}
                   height="500px"
                 />
@@ -138,11 +189,20 @@ export default function KnowledgeGraphPage() {
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="h-[calc(100%-80px)]">
-                  <GraphViewer
-                    data={graphData}
-                    onNodeClick={handleNodeClick}
-                    height="100%"
-                  />
+                  {isLoadingGraph ? (
+                    <div className="flex items-center justify-center h-full">
+                      <div className="text-center text-muted-foreground">
+                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
+                        <p>그래프 로딩 중...</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <GraphViewer
+                      data={visualizeGraphData}
+                      onNodeClick={handleNodeClick}
+                      height="100%"
+                    />
+                  )}
                 </CardContent>
               </Card>
             </div>
@@ -224,14 +284,14 @@ export default function KnowledgeGraphPage() {
           </div>
 
           {/* Related Graph */}
-          {graphData && (
+          {queryGraphData && (
             <Card>
               <CardHeader>
                 <CardTitle>관련 그래프</CardTitle>
               </CardHeader>
               <CardContent>
                 <GraphViewer
-                  data={graphData}
+                  data={queryGraphData}
                   onNodeClick={handleNodeClick}
                   height="400px"
                 />
