@@ -411,3 +411,14 @@ class GraphStore:
         with self.driver.session() as session:
             result = session.run(query, dataset_id=dataset_id)
             return result.single()["deleted"]
+
+    def get_processed_chunk_ids(self, dataset_id: str) -> set:
+        """Get set of chunk_ids that have already been processed for a dataset"""
+        query = """
+        MATCH (e:Entity {dataset_id: $dataset_id})
+        WHERE e.source_chunk_id IS NOT NULL
+        RETURN DISTINCT e.source_chunk_id as chunk_id
+        """
+        with self.driver.session() as session:
+            result = session.run(query, dataset_id=dataset_id)
+            return {record["chunk_id"] for record in result}

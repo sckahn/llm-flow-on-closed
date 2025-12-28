@@ -53,6 +53,7 @@ class BuildRequest(BaseModel):
     dify_api_key: str = Field(default="", description="Dify API key (optional)")
     chunk_size: int = Field(default=4000, description="Chunk size for processing")
     batch_size: int = Field(default=5, description="Segments per batch")
+    resume: bool = Field(default=True, description="Resume from last checkpoint (skip already processed segments)")
 
 
 class BuildResponse(BaseModel):
@@ -68,10 +69,12 @@ class ProgressResponse(BaseModel):
     completed_documents: int = 0
     total_segments: int = 0
     completed_segments: int = 0
+    skipped_segments: int = 0
     current_document: str = ""
     entities_extracted: int = 0
     relationships_extracted: int = 0
     error: Optional[str] = None
+    resume_mode: bool = False
 
 
 async def get_pg_connection():
@@ -118,6 +121,7 @@ async def fetch_segments_from_db(document_id: str) -> List[dict]:
 async def build_graphrag_task(
     dataset_id: str,
     chunk_size: int,
+    resume: bool = True,
 ):
     """Background task to build GraphRAG index using direct DB access"""
     global _build_progress
@@ -129,15 +133,24 @@ async def build_graphrag_task(
             "completed_documents": 0,
             "total_segments": 0,
             "completed_segments": 0,
+            "skipped_segments": 0,
             "current_document": "Fetching documents from database...",
             "entities_extracted": 0,
             "relationships_extracted": 0,
             "error": None,
+            "resume_mode": resume,
         }
 
         extractor = EntityExtractor()
         graph_store = get_graph_store()
         vector_store = get_vector_store()
+
+        # Get already processed chunk_ids if resume mode
+        processed_chunks: set = set()
+        if resume:
+            _build_progress[dataset_id]["current_document"] = "Loading processed chunks from Neo4j..."
+            processed_chunks = graph_store.get_processed_chunk_ids(dataset_id)
+            logger.info(f"Resume mode: Found {len(processed_chunks)} already processed chunks")
 
         # Fetch documents directly from PostgreSQL
         completed_docs = await fetch_documents_from_db(dataset_id)
@@ -151,6 +164,7 @@ async def build_graphrag_task(
 
         total_entities = 0
         total_relationships = 0
+        skipped_count = 0
 
         for doc_idx, doc in enumerate(completed_docs):
             doc_id = str(doc["id"])
@@ -165,14 +179,21 @@ async def build_graphrag_task(
 
                 # Process each segment individually for better extraction
                 for seg_idx, segment in enumerate(segments):
+                    chunk_id = f"{doc_id}_seg_{seg_idx}"
+
+                    # Skip already processed chunks in resume mode
+                    if resume and chunk_id in processed_chunks:
+                        skipped_count += 1
+                        _build_progress[dataset_id]["completed_segments"] += 1
+                        _build_progress[dataset_id]["skipped_segments"] = skipped_count
+                        continue
+
                     seg_text = segment.get("content", "").strip()
                     if not seg_text:
                         _build_progress[dataset_id]["completed_segments"] += 1
                         continue
 
                     try:
-                        chunk_id = f"{doc_id}_seg_{seg_idx}"
-
                         # Extract entities and relationships from each segment
                         entity_response, rel_response = extractor.extract_all(
                             text=seg_text[:chunk_size],
@@ -210,7 +231,7 @@ async def build_graphrag_task(
 
         _build_progress[dataset_id]["status"] = "completed"
         _build_progress[dataset_id]["current_document"] = ""
-        logger.info(f"Build completed for {dataset_id}: {total_entities} entities, {total_relationships} relationships")
+        logger.info(f"Build completed for {dataset_id}: {total_entities} entities, {total_relationships} relationships, {skipped_count} skipped")
 
     except Exception as e:
         logger.error(f"Build failed for {dataset_id}: {e}")
@@ -232,12 +253,14 @@ async def start_build(request: BuildRequest, background_tasks: BackgroundTasks):
         build_graphrag_task,
         dataset_id=dataset_id,
         chunk_size=request.chunk_size,
+        resume=request.resume,
     )
 
+    mode = "resume" if request.resume else "full rebuild"
     return BuildResponse(
         dataset_id=dataset_id,
         status="started",
-        message="Build started in background",
+        message=f"Build started in background ({mode} mode)",
     )
 
 
@@ -255,10 +278,12 @@ async def get_progress(dataset_id: str):
         completed_documents=progress.get("completed_documents", 0),
         total_segments=progress.get("total_segments", 0),
         completed_segments=progress.get("completed_segments", 0),
+        skipped_segments=progress.get("skipped_segments", 0),
         current_document=progress.get("current_document", ""),
         entities_extracted=progress.get("entities_extracted", 0),
         relationships_extracted=progress.get("relationships_extracted", 0),
         error=progress.get("error"),
+        resume_mode=progress.get("resume_mode", False),
     )
 
 
