@@ -24,7 +24,7 @@ import {
   FolderUp,
   RefreshCw,
 } from 'lucide-react';
-import { getDataset, getDocuments, uploadDocument, deleteDocument, retryDocumentIndexing, getDocumentProgress, type DocumentProgress as DocProgressType } from '@/lib/api/datasets';
+import { getDataset, getDocuments, uploadDocument, deleteDocument, retryDocumentIndexing, getDocumentProgress } from '@/lib/api/datasets';
 import { graphragApi, type BuildGraphRAGProgress } from '@/lib/api/graphrag';
 import type { Document } from '@/types/api';
 import {
@@ -58,7 +58,7 @@ const statusIcons: Record<string, React.ReactNode> = {
 
 // Progress component for document indexing with real-time updates
 function DocumentProgress({ doc, datasetId }: { doc: Document; datasetId: string }) {
-  const isProcessing = doc.indexing_status === 'parsing' || doc.indexing_status === 'indexing' || doc.indexing_status === 'splitting';
+  const isProcessing = doc.indexing_status === 'parsing' || doc.indexing_status === 'indexing';
 
   // Poll progress API for processing documents
   const { data: progressData } = useQuery({
@@ -84,10 +84,8 @@ function DocumentProgress({ doc, datasetId }: { doc: Document; datasetId: string
           return Math.round((doc.completed_segments / doc.total_segments) * 100);
         }
         return 75;
-      case 'splitting':
-        return 50;
       case 'parsing':
-        return 25;
+        return 50;
       case 'waiting':
       case 'paused':
         return 0;

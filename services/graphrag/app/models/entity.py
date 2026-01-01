@@ -28,6 +28,7 @@ class Entity(BaseModel):
     properties: Dict[str, Any] = Field(default_factory=dict, description="Additional properties")
     source_document_id: Optional[str] = Field(None, description="Source document ID")
     source_chunk_id: Optional[str] = Field(None, description="Source chunk ID")
+    source_page: Optional[int] = Field(None, description="Source page number in document")
     confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="Extraction confidence")
     embedding: Optional[List[float]] = Field(None, description="Entity embedding vector")
 

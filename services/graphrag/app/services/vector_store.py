@@ -34,13 +34,20 @@ class VectorStore:
             alias="default",
             host=self.settings.milvus_host,
             port=self.settings.milvus_port,
+            timeout=10,  # 10 second connection timeout
         )
 
     def _ensure_collection(self):
         """Create collection if not exists"""
         if utility.has_collection(self.COLLECTION_NAME):
             self.collection = Collection(self.COLLECTION_NAME)
-            self.collection.load()
+            # Lazy load - don't block on startup
+            try:
+                load_state = utility.load_state(self.COLLECTION_NAME)
+                if load_state != "Loaded":
+                    self.collection.load(_async=True)  # Non-blocking load
+            except Exception:
+                pass
             return
 
         fields = [
@@ -159,45 +166,60 @@ class VectorStore:
         top_k: int = 10,
     ) -> List[Dict[str, Any]]:
         """Search for similar entities"""
-        # Get query embedding
-        query_embedding = await self.get_embedding(query)
+        try:
+            # Check if collection is loaded
+            try:
+                load_state = utility.load_state(self.COLLECTION_NAME)
+                # load_state returns LoadState enum, convert to string for comparison
+                if str(load_state) != "Loaded":
+                    logger.warning(f"Milvus collection not loaded (state: {load_state}), skipping vector search")
+                    return []
+            except Exception as e:
+                logger.warning(f"Failed to check Milvus load state: {e}")
+                return []
 
-        # Build filter expression
-        expr_parts = []
-        if dataset_id:
-            expr_parts.append(f'dataset_id == "{dataset_id}"')
-        if entity_types:
-            types_str = ", ".join([f'"{t}"' for t in entity_types])
-            expr_parts.append(f"entity_type in [{types_str}]")
+            # Get query embedding
+            query_embedding = await self.get_embedding(query)
 
-        expr = " and ".join(expr_parts) if expr_parts else None
+            # Build filter expression
+            expr_parts = []
+            if dataset_id:
+                expr_parts.append(f'dataset_id == "{dataset_id}"')
+            if entity_types:
+                types_str = ", ".join([f'"{t}"' for t in entity_types])
+                expr_parts.append(f"entity_type in [{types_str}]")
 
-        # Search
-        search_params = {"metric_type": "COSINE", "params": {"nprobe": 16}}
-        results = self.collection.search(
-            data=[query_embedding],
-            anns_field="embedding",
-            param=search_params,
-            limit=top_k,
-            expr=expr,
-            output_fields=["id", "entity_name", "entity_type", "description", "dataset_id"],
-        )
+            expr = " and ".join(expr_parts) if expr_parts else None
 
-        # Format results
-        search_results = []
-        for hits in results:
-            for hit in hits:
-                search_results.append({
-                    "id": hit.entity.get("id"),
-                    "name": hit.entity.get("entity_name"),
-                    "type": hit.entity.get("entity_type"),
-                    "description": hit.entity.get("description"),
-                    "dataset_id": hit.entity.get("dataset_id"),
-                    "score": hit.score,
-                    "source": "vector",
-                })
+            # Search
+            search_params = {"metric_type": "COSINE", "params": {"nprobe": 16}}
+            results = self.collection.search(
+                data=[query_embedding],
+                anns_field="embedding",
+                param=search_params,
+                limit=top_k,
+                expr=expr,
+                output_fields=["id", "entity_name", "entity_type", "description", "dataset_id"],
+            )
 
-        return search_results
+            # Format results
+            search_results = []
+            for hits in results:
+                for hit in hits:
+                    search_results.append({
+                        "id": hit.entity.get("id"),
+                        "name": hit.entity.get("entity_name"),
+                        "type": hit.entity.get("entity_type"),
+                        "description": hit.entity.get("description"),
+                        "dataset_id": hit.entity.get("dataset_id"),
+                        "score": hit.score,
+                        "source": "vector",
+                    })
+
+            return search_results
+        except Exception as e:
+            logger.warning(f"Milvus search failed, falling back to graph-only search: {e}")
+            return []
 
     def delete_by_dataset(self, dataset_id: str) -> int:
         """Delete all entities for a dataset"""

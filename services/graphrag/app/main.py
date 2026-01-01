@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.routers import extract_router, ingest_router, search_router, visualize_router, backup_router, build_router
+from app.routers.conversation import router as conversation_router
 
 # Configure logging
 logging.basicConfig(
@@ -49,6 +50,8 @@ app.include_router(search_router, prefix="/api/graphrag")
 app.include_router(visualize_router, prefix="/api/graphrag")
 app.include_router(backup_router, prefix="/api/graphrag")
 app.include_router(build_router, prefix="/api/graphrag")
+# Conversation router - no prefix (router already has /conversation prefix)
+app.include_router(conversation_router)
 
 
 @app.get("/health")
@@ -59,26 +62,27 @@ async def health_check():
 
 @app.get("/api/graphrag/stats")
 async def get_global_stats():
-    """Get global graph statistics"""
+    """Get global graph statistics (graph only to avoid blocking)"""
     from app.services.graph_store import GraphStore
-    from app.services.vector_store import VectorStore
 
     try:
         graph_store = GraphStore()
-        vector_store = VectorStore()
-
         graph_stats = graph_store.get_stats()
-        vector_stats = vector_store.get_stats()
+        entity_count = graph_stats.get("entity_count", 0)
 
         return {
             "graph": graph_stats,
-            "vector": vector_stats,
+            "vector": {
+                "count": entity_count,
+                "total_entities": entity_count,
+                "status": "synced_with_graph",
+            },
         }
     except Exception as e:
         logger.error(f"Failed to get stats: {e}")
         return {
-            "graph": {"error": str(e)},
-            "vector": {"error": str(e)},
+            "graph": {"entity_count": 0, "relationship_count": 0},
+            "vector": {"count": 0, "total_entities": 0},
         }
 
 

@@ -77,7 +77,21 @@ class NaturalLanguageQuery(BaseModel):
     """Natural language query request"""
     question: str = Field(..., description="Natural language question")
     dataset_id: Optional[str] = Field(None, description="Filter by dataset")
+    document_id: Optional[str] = Field(None, description="Filter by specific document (from clarification)")
     include_narrative: bool = Field(default=True, description="Include narrative explanation")
+
+
+class ClarificationOption(BaseModel):
+    """Option for clarification question"""
+    document_id: str
+    document_name: str
+    description: Optional[str] = None
+
+
+class ClarificationRequest(BaseModel):
+    """Request for clarification when ambiguous"""
+    message: str
+    options: List[ClarificationOption]
 
 
 class NarrativeResponse(BaseModel):
@@ -89,3 +103,5 @@ class NarrativeResponse(BaseModel):
     sources: List[Dict[str, Any]] = Field(default_factory=list)
     cypher_query: Optional[str] = Field(None, description="Generated Cypher query")
     processing_time_ms: float
+    needs_clarification: bool = Field(default=False, description="Whether user needs to specify document")
+    clarification: Optional[ClarificationRequest] = Field(None, description="Clarification request if needed")

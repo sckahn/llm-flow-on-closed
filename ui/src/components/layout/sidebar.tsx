@@ -8,6 +8,7 @@ import {
   GitBranch,
   Database,
   Network,
+  MessageSquare,
   Key,
   Settings,
   LogOut,
@@ -24,6 +25,7 @@ const navigation = [
   { name: 'Workflows', href: '/workflows', icon: GitBranch },
   { name: 'Datasets', href: '/datasets', icon: Database },
   { name: 'Knowledge Graph', href: '/knowledge-graph', icon: Network },
+  { name: 'Conversation', href: '/conversation', icon: MessageSquare },
   { name: 'API Keys', href: '/api-keys', icon: Key },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];

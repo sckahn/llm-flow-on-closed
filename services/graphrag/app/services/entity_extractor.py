@@ -168,8 +168,21 @@ class EntityExtractor:
             relationships = []
 
             for item in data:
-                source_name = item.get("source", "").lower().strip()
-                target_name = item.get("target", "").lower().strip()
+                source_raw = item.get("source", "")
+                target_raw = item.get("target", "")
+
+                # Handle list values (LLM sometimes returns lists)
+                if isinstance(source_raw, list):
+                    source_raw = source_raw[0] if source_raw else ""
+                if isinstance(target_raw, list):
+                    target_raw = target_raw[0] if target_raw else ""
+
+                # Ensure string type
+                if not isinstance(source_raw, str) or not isinstance(target_raw, str):
+                    continue
+
+                source_name = source_raw.lower().strip()
+                target_name = target_raw.lower().strip()
 
                 # Try exact match first
                 source_entity = entity_map.get(source_name)

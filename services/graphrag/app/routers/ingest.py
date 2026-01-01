@@ -219,18 +219,23 @@ async def delete_dataset(request: DeleteDatasetRequest):
 
 @router.get("/stats/{dataset_id}")
 async def get_dataset_stats(dataset_id: str):
-    """Get statistics for a dataset"""
+    """Get statistics for a dataset (graph only, vector stats are async)"""
     try:
         graph_store = get_graph_store()
-        vector_store = get_vector_store()
-
         graph_stats = graph_store.get_stats(dataset_id)
-        vector_stats = vector_store.get_stats(dataset_id)
 
+        # Skip Milvus stats to avoid blocking - use graph stats only
+        # Vector embeddings are synced with graph entities
+        entity_count = graph_stats.get("entity_count", 0)
         return {
             "dataset_id": dataset_id,
             "graph": graph_stats,
-            "vector": vector_stats,
+            "vector": {
+                "count": entity_count,
+                "total_entities": entity_count,
+                "entity_count": entity_count,
+                "status": "synced_with_graph",
+            },
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

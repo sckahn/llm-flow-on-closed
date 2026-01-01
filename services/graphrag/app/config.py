@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     milvus_port: int = 19530
     milvus_collection: str = "knowledge_entities"
 
+    # Redis (for session management)
+    redis_host: str = "redis"
+    redis_port: int = 6379
+    redis_db: int = 1  # separate DB for conversations
+    redis_password: str = "redis_llmflow"  # from REDIS_PASSWORD env var
+
     # vLLM (OpenAI compatible) - Llama 4 support
     llm_api_base: str = "http://vllm:8000/v1"
     llm_api_key: str = "llmflow-vllm-api-key"

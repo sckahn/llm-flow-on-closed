@@ -6,6 +6,8 @@ from app.models.search import (
     SearchResult,
     NaturalLanguageQuery,
     NarrativeResponse,
+    ClarificationRequest,
+    ClarificationOption,
 )
 from app.services.graph_store import GraphStore
 from app.services.vector_store import VectorStore
@@ -69,10 +71,148 @@ async def search(query: SearchQuery):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+async def extract_document_context(question: str) -> Optional[str]:
+    """Extract document/product context from question and return matching document ID"""
+    import asyncpg
+    import os
+
+    # Product keywords to document name patterns
+    product_patterns = {
+        '변액연금': '변액연금보험',
+        '변액적립': '변액적립보험',
+        '즉시연금': '즉시연금보험',
+        '월지급': '월지급식',
+        '종신': '종신보험',
+        '건강': '건강보험',
+    }
+
+    # Find matching product in question
+    matched_pattern = None
+    for keyword, pattern in product_patterns.items():
+        if keyword in question:
+            matched_pattern = pattern
+            break
+
+    if not matched_pattern:
+        return None
+
+    # Find document ID from database
+    try:
+        conn = await asyncpg.connect(
+            host=os.getenv("DIFY_DB_HOST", "postgresql"),
+            port=int(os.getenv("DIFY_DB_PORT", "5432")),
+            user=os.getenv("DIFY_DB_USER", "llmflow"),
+            password=os.getenv("DIFY_DB_PASSWORD", "postgres_llmflow"),
+            database=os.getenv("DIFY_DB_NAME", "dify"),
+        )
+        try:
+            row = await conn.fetchrow(
+                "SELECT id::text FROM documents WHERE name ILIKE $1 LIMIT 1",
+                f"%{matched_pattern}%"
+            )
+            return row['id'] if row else None
+        finally:
+            await conn.close()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to extract document context: {e}")
+        return None
+
+
+# Common topics that exist across multiple insurance documents
+COMMON_INSURANCE_TOPICS = [
+    '보험금', '지급', '지급사유', '보장', '특약', '납입', '해지',
+    '청구', '보험료', '계약', '가입', '만기', '수익자', '피보험자',
+    '보험기간', '면책', '부담보', '갱신', '전환', '중도인출',
+]
+
+
+def needs_document_clarification(question: str, doc_context: Optional[str]) -> bool:
+    """Check if the question is about a common topic and needs document clarification"""
+    if doc_context:
+        # Document context already specified
+        return False
+
+    # Check if question contains common insurance topics
+    for topic in COMMON_INSURANCE_TOPICS:
+        if topic in question:
+            return True
+
+    return False
+
+
+async def get_available_documents(dataset_id: Optional[str] = None) -> List[ClarificationOption]:
+    """Get list of available insurance documents for clarification"""
+    import asyncpg
+    import os
+
+    try:
+        conn = await asyncpg.connect(
+            host=os.getenv("DIFY_DB_HOST", "postgresql"),
+            port=int(os.getenv("DIFY_DB_PORT", "5432")),
+            user=os.getenv("DIFY_DB_USER", "llmflow"),
+            password=os.getenv("DIFY_DB_PASSWORD", "postgres_llmflow"),
+            database=os.getenv("DIFY_DB_NAME", "dify"),
+        )
+        try:
+            # Get documents with insurance-related names
+            query = """
+                SELECT id::text, name
+                FROM documents
+                WHERE name ILIKE '%보험%' OR name ILIKE '%연금%'
+                ORDER BY name
+                LIMIT 10
+            """
+            rows = await conn.fetch(query)
+            return [
+                ClarificationOption(
+                    document_id=row['id'],
+                    document_name=row['name'],
+                    description=None
+                )
+                for row in rows
+            ]
+        finally:
+            await conn.close()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to get available documents: {e}")
+        return []
+
+
 @router.post("/nl-query", response_model=NarrativeResponse)
 async def natural_language_query(query: NaturalLanguageQuery):
     """Process natural language query and return narrative response"""
     try:
+        import time
+        start_time = time.time()
+
+        # Use explicitly provided document_id or extract from question
+        doc_context = query.document_id
+        if not doc_context:
+            doc_context = await extract_document_context(query.question)
+
+        # Check if clarification is needed (common topic without document context)
+        # Skip if document_id was explicitly provided in query
+        if not query.document_id and needs_document_clarification(query.question, doc_context):
+            available_docs = await get_available_documents(query.dataset_id)
+            if available_docs:
+                processing_time = (time.time() - start_time) * 1000
+                return NarrativeResponse(
+                    question=query.question,
+                    answer="",
+                    narrative="",
+                    graph=None,
+                    sources=[],
+                    cypher_query=None,
+                    processing_time_ms=processing_time,
+                    needs_clarification=True,
+                    clarification=ClarificationRequest(
+                        message="어떤 보험 상품에 대해 질문하시는 건가요? 아래에서 선택해 주세요.",
+                        options=available_docs
+                    )
+                )
+
         nl_to_cypher = get_nl_to_cypher()
         narrative_generator = get_narrative_generator()
         graph_store = get_graph_store()
@@ -131,19 +271,61 @@ async def natural_language_query(query: NaturalLanguageQuery):
                         max_depth=2,
                         limit=50,
                     )
-                elif query.dataset_id:
-                    # Last resort: get dataset graph
-                    graph = graph_store.get_graph_by_dataset(
-                        dataset_id=query.dataset_id,
-                        limit=50,
-                    )
             except Exception as e:
                 import logging
-                logging.getLogger(__name__).warning(f"Fallback search failed: {e}")
+                logging.getLogger(__name__).warning(f"Hybrid search failed: {e}")
+
+        # Additional fallback: direct Neo4j text search
+        if not graph or (not graph.nodes):
+            try:
+                import re
+                # Extract keywords from question (remove common question words)
+                question_text = query.question
+                # Remove common Korean question patterns
+                question_text = re.sub(r'(이란|란|가|는|을|를|에|의|로|으로|에서|하다|입니까|인가요|인가|입니다|무엇|어떻게|어디|언제|왜|뭐|뭔가요|\?)', ' ', question_text)
+                # Clean up whitespace
+                keywords = [k.strip() for k in question_text.split() if len(k.strip()) >= 2]
+
+                text_results = []
+                # Try searching with different keyword combinations
+                for keyword in keywords[:3]:  # Try top 3 keywords
+                    results = graph_store.search_entities(
+                        query=keyword,
+                        dataset_id=query.dataset_id,
+                        source_document_id=doc_context,  # Filter by document context
+                        limit=5,
+                    )
+                    text_results.extend(results)
+                    if results:
+                        break  # Found results, stop searching
+
+                if text_results:
+                    # Get graph from first result
+                    first_entity_id = text_results[0].get("id")
+                    if first_entity_id:
+                        graph = graph_store.get_entity_neighbors(
+                            entity_id=first_entity_id,
+                            max_depth=2,
+                            limit=50,
+                        )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"Neo4j text search failed: {e}")
+
+        # Last resort: get dataset graph if dataset_id provided
+        if (not graph or not graph.nodes) and query.dataset_id:
+            try:
+                graph = graph_store.get_graph_by_dataset(
+                    dataset_id=query.dataset_id,
+                    limit=50,
+                )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"Dataset graph fallback failed: {e}")
 
         # Generate narrative if requested
         if query.include_narrative and graph and graph.nodes:
-            response = narrative_generator.answer_question(
+            response = await narrative_generator.answer_question(
                 question=query.question,
                 graph=graph,
                 cypher_query=nl_result.get("cypher") if not used_fallback else None,

@@ -3,10 +3,13 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5002';
 
 interface RequestOptions extends RequestInit {
   params?: Record<string, string>;
+  skipAuthRefresh?: boolean;
 }
 
 class ApiClient {
   private baseUrl: string;
+  private isRefreshing = false;
+  private refreshPromise: Promise<boolean> | null = null;
 
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl;
@@ -17,11 +20,59 @@ class ApiClient {
     return localStorage.getItem('access_token');
   }
 
+  private getRefreshToken(): string | null {
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem('refresh_token');
+  }
+
+  private setTokens(accessToken: string, refreshToken: string): void {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem('access_token', accessToken);
+    localStorage.setItem('refresh_token', refreshToken);
+  }
+
+  private async tryRefreshToken(): Promise<boolean> {
+    // Prevent multiple concurrent refresh attempts
+    if (this.isRefreshing && this.refreshPromise) {
+      return this.refreshPromise;
+    }
+
+    const refreshToken = this.getRefreshToken();
+    if (!refreshToken) return false;
+
+    this.isRefreshing = true;
+    this.refreshPromise = (async () => {
+      try {
+        const response = await fetch(`${this.baseUrl}/console/api/refresh-token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          if (data.access_token && data.refresh_token) {
+            this.setTokens(data.access_token, data.refresh_token);
+            return true;
+          }
+        }
+        return false;
+      } catch {
+        return false;
+      } finally {
+        this.isRefreshing = false;
+        this.refreshPromise = null;
+      }
+    })();
+
+    return this.refreshPromise;
+  }
+
   private async request<T>(
     endpoint: string,
     options: RequestOptions = {}
   ): Promise<T> {
-    const { params, ...fetchOptions } = options;
+    const { params, skipAuthRefresh, ...fetchOptions } = options;
 
     let url = `${this.baseUrl}${endpoint}`;
     if (params) {
@@ -39,10 +90,26 @@ class ApiClient {
       (headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
     }
 
-    const response = await fetch(url, {
+    let response = await fetch(url, {
       ...fetchOptions,
       headers,
     });
+
+    // Try to refresh token on 401 Unauthorized
+    if (response.status === 401 && !skipAuthRefresh) {
+      const refreshed = await this.tryRefreshToken();
+      if (refreshed) {
+        // Retry with new token
+        const newToken = this.getToken();
+        if (newToken) {
+          (headers as Record<string, string>)['Authorization'] = `Bearer ${newToken}`;
+        }
+        response = await fetch(url, {
+          ...fetchOptions,
+          headers,
+        });
+      }
+    }
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ message: 'Request failed' }));

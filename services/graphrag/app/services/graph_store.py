@@ -3,6 +3,7 @@ from typing import List, Optional, Dict, Any
 from neo4j import GraphDatabase, Driver
 from neo4j.exceptions import Neo4jError
 from neo4j.time import DateTime as Neo4jDateTime
+from neo4j.graph import Node, Relationship as Neo4jRelationship, Path
 
 from app.config import get_settings
 from app.models.entity import Entity
@@ -16,6 +17,26 @@ def _serialize_neo4j_value(value: Any) -> Any:
     """Convert Neo4j types to JSON-serializable types"""
     if isinstance(value, Neo4jDateTime):
         return value.isoformat()
+    if isinstance(value, Node):
+        # Neo4j Node object - convert to dict
+        return {
+            "id": dict(value).get("id", str(value.element_id)),
+            "labels": list(value.labels),
+            **{k: _serialize_neo4j_value(v) for k, v in dict(value).items()}
+        }
+    if isinstance(value, Neo4jRelationship):
+        # Neo4j Relationship object - convert to dict
+        return {
+            "id": dict(value).get("id", str(value.element_id)),
+            "type": value.type,
+            **{k: _serialize_neo4j_value(v) for k, v in dict(value).items()}
+        }
+    if isinstance(value, Path):
+        # Neo4j Path object - convert nodes and relationships
+        return {
+            "nodes": [_serialize_neo4j_value(node) for node in value.nodes],
+            "relationships": [_serialize_neo4j_value(rel) for rel in value.relationships],
+        }
     if isinstance(value, dict):
         return {k: _serialize_neo4j_value(v) for k, v in value.items()}
     if isinstance(value, list):
@@ -64,6 +85,7 @@ class GraphStore:
             e.properties = $properties,
             e.source_document_id = $source_document_id,
             e.source_chunk_id = $source_chunk_id,
+            e.source_page = $source_page,
             e.confidence = $confidence,
             e.dataset_id = $dataset_id,
             e.updated_at = datetime()
@@ -80,6 +102,7 @@ class GraphStore:
                 properties=str(entity.properties),
                 source_document_id=entity.source_document_id,
                 source_chunk_id=entity.source_chunk_id,
+                source_page=entity.source_page,
                 confidence=entity.confidence,
                 dataset_id=dataset_id,
             )
@@ -98,6 +121,7 @@ class GraphStore:
             e.properties = entity.properties,
             e.source_document_id = entity.source_document_id,
             e.source_chunk_id = entity.source_chunk_id,
+            e.source_page = entity.source_page,
             e.confidence = entity.confidence,
             e.dataset_id = $dataset_id,
             e.updated_at = datetime()
@@ -114,6 +138,7 @@ class GraphStore:
                 "properties": str(e.properties),
                 "source_document_id": e.source_document_id,
                 "source_chunk_id": e.source_chunk_id,
+                "source_page": e.source_page,
                 "confidence": e.confidence,
             })
 
@@ -214,14 +239,21 @@ class GraphStore:
         query: str,
         dataset_id: Optional[str] = None,
         entity_types: Optional[List[str]] = None,
+        source_document_id: Optional[str] = None,
         limit: int = 10,
     ) -> List[Dict[str, Any]]:
-        """Search entities by name or description"""
+        """Search entities by name or description (case-insensitive, bidirectional)"""
+        # 양방향 CONTAINS: 엔티티가 검색어를 포함하거나, 검색어가 엔티티를 포함
+        # 최소 2글자 이상인 엔티티만 반환
         cypher = """
         MATCH (e:Entity)
-        WHERE (e.name CONTAINS $search_text OR e.description CONTAINS $search_text)
+        WHERE size(e.name) >= 2 AND (
+            toLower(e.name) CONTAINS toLower($search_text)
+            OR toLower(e.description) CONTAINS toLower($search_text)
+            OR toLower($search_text) CONTAINS toLower(e.name)
+        )
         """
-        params = {"search_text": query, "limit": limit}
+        params = {"search_text": query.strip(), "limit": limit}
 
         if dataset_id:
             cypher += " AND e.dataset_id = $dataset_id"
@@ -230,6 +262,10 @@ class GraphStore:
         if entity_types:
             cypher += " AND e.type IN $entity_types"
             params["entity_types"] = entity_types
+
+        if source_document_id:
+            cypher += " AND e.source_document_id = $source_document_id"
+            params["source_document_id"] = source_document_id
 
         cypher += """
         RETURN e
@@ -240,6 +276,67 @@ class GraphStore:
         with self.driver.session() as session:
             result = session.run(cypher, parameters=params)
             return [dict(record["e"]) for record in result]
+
+    def search_with_context(
+        self,
+        query: str,
+        dataset_id: Optional[str] = None,
+        source_document_id: Optional[str] = None,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Search entities with relationship context for richer results"""
+        # 엔티티와 연결된 관계 정보까지 포함하여 검색
+        cypher = """
+        MATCH (e:Entity)
+        WHERE size(e.name) >= 2 AND (
+            toLower(e.name) CONTAINS toLower($search_text)
+            OR toLower(e.description) CONTAINS toLower($search_text)
+            OR toLower($search_text) CONTAINS toLower(e.name)
+        )
+        """
+        params = {"search_text": query.strip(), "limit": limit}
+
+        if dataset_id:
+            cypher += " AND e.dataset_id = $dataset_id"
+            params["dataset_id"] = dataset_id
+
+        if source_document_id:
+            cypher += " AND e.source_document_id = $source_document_id"
+            params["source_document_id"] = source_document_id
+
+        # 관계 정보도 함께 가져옴
+        cypher += """
+        OPTIONAL MATCH (e)-[r]-(related:Entity)
+        WHERE r.description IS NOT NULL
+        WITH e, collect(DISTINCT {
+            rel_type: type(r),
+            rel_desc: r.description,
+            related_name: related.name
+        })[0..3] as relationships
+        RETURN e, relationships
+        ORDER BY e.confidence DESC
+        LIMIT $limit
+        """
+
+        results = []
+        with self.driver.session() as session:
+            result = session.run(cypher, parameters=params)
+            for record in result:
+                entity = dict(record["e"])
+                rels = record["relationships"] or []
+
+                # 관계 설명을 엔티티 설명에 추가
+                if rels:
+                    rel_contexts = []
+                    for rel in rels:
+                        if rel.get("rel_desc"):
+                            rel_contexts.append(rel["rel_desc"])
+                    if rel_contexts:
+                        entity["context"] = " | ".join(rel_contexts)
+
+                results.append(entity)
+
+        return results
 
     def get_entity_neighbors(
         self,
@@ -360,7 +457,8 @@ class GraphStore:
         """Execute a raw Cypher query"""
         with self.driver.session() as session:
             result = session.run(query, **(params or {}))
-            return [dict(record) for record in result]
+            # Serialize all Neo4j objects to JSON-serializable types
+            return [_serialize_neo4j_value(dict(record)) for record in result]
 
     def get_stats(self, dataset_id: Optional[str] = None) -> Dict[str, Any]:
         """Get graph statistics"""

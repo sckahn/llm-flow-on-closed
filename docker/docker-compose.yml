@@ -243,6 +243,9 @@ services:
       LOG_LEVEL: INFO
       SECRET_KEY: ${DIFY_SECRET_KEY}
       INIT_PASSWORD: ${DIFY_INIT_PASSWORD}
+      # Session settings - extended for better UX
+      ACCESS_TOKEN_EXPIRE_MINUTES: 1440
+      REFRESH_TOKEN_EXPIRE_DAYS: 30
       CONSOLE_WEB_URL: http://localhost:3033
       SERVICE_API_URL: http://localhost:5001
       APP_WEB_URL: http://localhost:3033
@@ -583,6 +586,15 @@ services:
       DIFY_DB_USER: ${POSTGRES_USER:-llmflow}
       DIFY_DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres_llmflow}
       DIFY_DB_NAME: ${DIFY_DB_NAME:-dify}
+      # S3/MinIO for PDF access (Docling)
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minio_llmflow}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-dify}
+    volumes:
+      # Persist EasyOCR and Docling model cache
+      - graphrag-models:/app/.easyocr
+      - graphrag-docling:/app/.docling
     depends_on:
       neo4j:
         condition: service_healthy
@@ -786,3 +798,5 @@ volumes:
   llama-factory-cache:
   prometheus-data:
   grafana-data:
+  graphrag-models:
+  graphrag-docling:
